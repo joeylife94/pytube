@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Downloads folder for this project
+downloads/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Streamlit and user-specific
+.streamlit/
+
+# pip
+pip-wheel-metadata/
+
+# logs and tmp
+*.log
+tmp/
+
+# secrets
+.env
+.env.*
+
+# other
+*.sqlite3
+*.db
