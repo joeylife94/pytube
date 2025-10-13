@@ -1,0 +1,305 @@
+import os
+import streamlit as st
+from pytube_helper import get_video_streams, download_video, download_audio, download_playlist, PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback, download_with_ytdlp
+from pytube import Playlist
+import time
+
+
+def human_speed(bps: float) -> str:
+    # human readable bytes/sec
+    for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
+        if bps < 1024.0:
+            return f"{bps:3.1f}{unit}"
+        bps /= 1024.0
+    return f"{bps:.1f}TB/s"
+
+st.set_page_config(page_title='pytube GUI', layout='centered')
+
+st.title('YouTube Downloader (pytube)')
+
+st.markdown('A simple GUI for downloading YouTube videos, audio, and playlists using pytube.')
+
+url = st.text_input('YouTube video or playlist URL')
+is_playlist = st.checkbox('Is this a playlist?')
+mode = st.radio('Download mode', ['Video', 'Audio'])
+backend = st.selectbox('Download backend', ['yt-dlp', 'pytube (default)', 'pytube then yt-dlp fallback'], index=0)
+
+col1, col2 = st.columns(2)
+with col1:
+    resolution = st.selectbox('Preferred resolution (for video)', ['Highest', '1080p', '720p', '480p', '360p', '240p'], index=0)
+with col2:
+    convert_mp3 = st.checkbox('Convert audio to MP3 (requires pydub + ffmpeg)', value=False)
+
+output_folder = st.text_input('Output folder (leave blank = current directory)', value='')
+if not output_folder:
+    output_folder = os.getcwd()
+
+if convert_mp3 and not PYDUB_AVAILABLE:
+    st.warning('pydub is not available. Install pydub and ffmpeg to enable MP3 conversion.')
+
+if not is_ffmpeg_available():
+    with st.expander('ffmpeg not found (why needed & how to install)'):
+        st.markdown('''
+        MP3 conversion requires ffmpeg. On Windows you can install using one of these methods:
+
+        - Download official static build from https://ffmpeg.org/download.html and add `ffmpeg.exe` to your PATH.
+        - If you have Chocolatey installed (admin), run: `choco install ffmpeg` in an elevated PowerShell.
+
+        After installation, restart your shell/terminal and restart this app.
+        ''')
+
+download_btn = st.button('Start download')
+
+log_area = st.empty()
+
+def log(msg):
+    log_area.text(msg)
+
+if download_btn:
+    if not url:
+        st.error('Please provide a YouTube URL.')
+    else:
+        try:
+            concurrency = st.number_input('Max concurrent downloads (playlist)', min_value=1, max_value=8, value=1)
+            stream_logs = st.empty()
+            overall_progress = None
+            if is_playlist:
+                st.info('Starting playlist download...')
+                res_pref = None if resolution == 'Highest' else resolution
+
+                urls = []
+                # when concurrency ==1 we can show per-item live updates
+                items = []
+                # create placeholders
+                status_box = st.container()
+
+                downloaded = []
+
+                if concurrency == 1:
+                    # define callback to update status per item
+                    total = None
+
+                    def per_item_cb(title, status):
+                        status_box.write(f"{title}: {status}")
+
+                    results = download_playlist(url, output_folder, resolution_preference=res_pref,
+                                                audio_only=(mode=='Audio'), convert_mp3=convert_mp3,
+                                                concurrency=1, per_item_callback=per_item_cb)
+                    st.success(f'Downloaded {len(results)} items to {output_folder}')
+                    for r in results:
+                        st.write(r)
+                else:
+                    st.warning('Parallel downloads enabled — live per-item streaming logs are limited. You will see a summary when done.')
+                    # prepare placeholders in session_state for each playlist item (with progress bars)
+                    from pytube import Playlist as PTPlaylist
+                    playlist_obj = PTPlaylist(url)
+                    urls = playlist_obj.video_urls
+                    n = len(urls)
+                    if 'playlist_items' not in st.session_state or len(st.session_state.get('playlist_items', [])) != n:
+                        st.session_state['playlist_items'] = [
+                            {'status': 'queued', 'progress': 0, 'text': f'Item {i+1}: queued'} for i in range(n)
+                        ]
+
+                    # render placeholders and progress bars
+                    item_placeholders = []
+                    for i in range(n):
+                        container = status_box.container()
+                        t = container.empty()
+                        p = container.progress(0)
+                        s = container.empty()
+                        t.text(st.session_state['playlist_items'][i]['text'])
+                        item_placeholders.append((t, p, s))
+
+                    def per_item_cb(title, status, video_url_cb, index_cb, received, total, speed, eta):
+                        try:
+                            # update state
+                            st.session_state['playlist_items'][index_cb]['status'] = status
+                            st.session_state['playlist_items'][index_cb]['text'] = f"{title}: {status}"
+                            if total and total > 0:
+                                pct = int(received / total * 100)
+                            else:
+                                pct = 0
+                            st.session_state['playlist_items'][index_cb]['progress'] = pct
+                            # update UI widgets
+                            t, p, s = item_placeholders[index_cb]
+                            t.text(st.session_state['playlist_items'][index_cb]['text'])
+                            p.progress(pct)
+                            s.text(f"{received:,} / {total:,} bytes — {human_speed(speed)} — ETA {eta}s")
+                        except Exception:
+                            pass
+
+                    try:
+                        results = download_playlist(url, output_folder, resolution_preference=res_pref,
+                                                    audio_only=(mode=='Audio'), convert_mp3=convert_mp3,
+                                                    concurrency=concurrency, per_item_callback=per_item_cb)
+                    except Exception as e:
+                        st.error(f'Playlist error: {e}')
+                        results = []
+                    st.success(f'Downloaded {len(results)} items to {output_folder}')
+                    for r in results:
+                        st.write(r)
+            else:
+                st.info('Fetching video info...')
+                streams = get_video_streams(url)
+                st.write(f"Title: {streams.get('title')}")
+
+                # If get_video_streams returned a yt-dlp info dict, offer only yt-dlp download path
+                if streams.get('backend') == 'yt-dlp':
+                    st.info('Metadata fetched via yt-dlp (pytube failed). Use yt-dlp backend to download.')
+                    if mode == 'Video':
+                        if st.button('Download video now (yt-dlp)'):
+                            import threading
+
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+
+                            def ytdlp_progress(fn, downloaded, total, speed, eta):
+                                try:
+                                    pct = int(downloaded / total * 100) if total and total > 0 else 0
+                                    # update widgets from main thread is best-effort; Streamlit may not reflect immediately
+                                    progress_bar.progress(min(pct, 100))
+                                    status_text.text(f"{downloaded:,} / {total:,} bytes — {human_speed(speed)} — ETA {eta}s")
+                                except Exception:
+                                    pass
+
+                            def _bg_download():
+                                try:
+                                    fname = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=ytdlp_progress)
+                                    # store result in session_state so user can see it
+                                    st.session_state['last_download'] = fname
+                                except Exception as e:
+                                    st.session_state['last_download_error'] = str(e)
+
+                            threading.Thread(target=_bg_download, daemon=True).start()
+                            st.info('Download started in background — check downloads folder and server logs.')
+                    else:
+                        # audio
+                        if st.button('Download audio now (yt-dlp)'):
+                            import threading
+
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+
+                            def ytdlp_progress(fn, downloaded, total, speed, eta):
+                                try:
+                                    pct = int(downloaded / total * 100) if total and total > 0 else 0
+                                    progress_bar.progress(min(pct, 100))
+                                    status_text.text(f"{downloaded:,} / {total:,} bytes — {human_speed(speed)} — ETA {eta}s")
+                                except Exception:
+                                    pass
+
+                            def _bg_download_audio():
+                                try:
+                                    fname = download_with_ytdlp(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=ytdlp_progress)
+                                    st.session_state['last_download'] = fname
+                                except Exception as e:
+                                    st.session_state['last_download_error'] = str(e)
+
+                            threading.Thread(target=_bg_download_audio, daemon=True).start()
+                            st.info('Audio download started in background — check downloads folder and server logs.')
+                else:
+                    # original pytube-based path
+                    if mode == 'Video':
+                        # build list of available resolutions
+                        options = []
+                        seen = set()
+                        for s in streams['progressive'] + streams['adaptive_video']:
+                            res = s.resolution or 'unknown'
+                            if res not in seen:
+                                options.append(res)
+                                seen.add(res)
+                        options = ['Highest'] + options
+                        chosen = st.selectbox('Choose resolution', options, index=0)
+
+                        if st.button('Download video now'):
+                            # pick stream
+                            stream = None
+                            if chosen == 'Highest':
+                                if streams['progressive']:
+                                    stream = streams['progressive'][0]
+                                elif streams['adaptive_video']:
+                                    stream = streams['adaptive_video'][0]
+                            else:
+                                for s in streams['progressive'] + streams['adaptive_video']:
+                                    if s.resolution == chosen:
+                                        stream = s
+                                        break
+                            if stream is None:
+                                st.error('No matching stream found.')
+                            else:
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+
+                                start_time = {'t': None}
+                                def progress_cb(received, total):
+                                    now = time.time()
+                                    if start_time['t'] is None:
+                                        start_time['t'] = now
+                                    elapsed = max(now - start_time['t'], 1e-6)
+                                    speed = received / elapsed
+                                    eta = int((total - received) / speed) if speed > 0 else 0
+                                    try:
+                                        percent = int(received / total * 100)
+                                        progress_bar.progress(min(percent, 100))
+                                        status_text.text(f"{received:,} / {total:,} bytes ({percent}%) — {human_speed(speed)} — ETA {eta}s")
+                                    except Exception:
+                                        pass
+
+                                with st.spinner('Downloading...'):
+                                    if backend == 'yt-dlp':
+                                        out = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                    elif backend == 'pytube then yt-dlp fallback':
+                                        out = download_fallback(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                    else:
+                                        out = download_video(stream, output_folder, progress_callback=progress_cb)
+                                progress_bar.progress(100)
+                                status_text.text('Completed')
+                                st.success(f'Downloaded to: {out}')
+
+                    else:
+                        # Audio mode
+                        audios = streams['audio']
+                        options = [s.abr for s in audios]
+                        chosen = st.selectbox('Choose audio bitrate', options)
+
+                        if st.button('Download audio now'):
+                            stream = None
+                            for s in audios:
+                                if s.abr == chosen:
+                                    stream = s
+                                    break
+                            if stream is None:
+                                st.error('No matching audio stream found.')
+                            else:
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+
+                                start_time = {'t': None}
+                                def progress_cb(received, total):
+                                    now = time.time()
+                                    if start_time['t'] is None:
+                                        start_time['t'] = now
+                                    elapsed = max(now - start_time['t'], 1e-6)
+                                    speed = received / elapsed
+                                    eta = int((total - received) / speed) if speed > 0 else 0
+                                    try:
+                                        percent = int(received / total * 100)
+                                        progress_bar.progress(min(percent, 100))
+                                        status_text.text(f"{received:,} / {total:,} bytes ({percent}%) — {human_speed(speed)} — ETA {eta}s")
+                                    except Exception:
+                                        pass
+
+                                with st.spinner('Downloading audio...'):
+                                    if backend == 'yt-dlp':
+                                        out = download_with_ytdlp(url, output_folder, audio_only=True, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                    elif backend == 'pytube then yt-dlp fallback':
+                                        out = download_fallback(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                    else:
+                                        out = download_audio(stream, output_folder, convert_mp3=convert_mp3, progress_callback=progress_cb)
+                                progress_bar.progress(100)
+                                status_text.text('Completed')
+                                st.success(f'Downloaded to: {out}')
+
+                
+        except Exception as e:
+            st.error(f'Error: {e}')

@@ -1,0 +1,6 @@
+streamlit>=1.0
+pytube>=12.1
+pydub>=0.25.1
+pytest>=7.0
+
+# Optional: ffmpeg is required by pydub to convert to mp3. On Windows, install ffmpeg and add to PATH.
