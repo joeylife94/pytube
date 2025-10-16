@@ -24,6 +24,9 @@ is_playlist = st.checkbox('Is this a playlist?')
 mode = st.radio('Download mode', ['Video', 'Audio'])
 backend = st.selectbox('Download backend', ['yt-dlp', 'pytube (default)', 'pytube then yt-dlp fallback'], index=0)
 
+# Whether to show live progress in the UI (this will block the UI while downloading)
+show_live_progress = st.checkbox('Show live progress in UI (blocks UI while downloading)', value=True)
+
 col1, col2 = st.columns(2)
 with col1:
     resolution = st.selectbox('Preferred resolution (for video)', ['Highest', '1080p', '720p', '480p', '360p', '240p'], index=0)
@@ -31,7 +34,15 @@ with col2:
     convert_mp3 = st.checkbox('Convert audio to MP3 (requires pydub + ffmpeg)', value=False)
 
 output_folder = st.text_input('Output folder (leave blank = current directory)', value='')
+# default to a repo-local downloads/ folder when blank
 if not output_folder:
+    output_folder = os.path.join(os.getcwd(), 'downloads')
+
+# ensure the output folder exists
+try:
+    os.makedirs(output_folder, exist_ok=True)
+except Exception:
+    st.warning(f'Could not create output folder: {output_folder}. Falling back to current directory')
     output_folder = os.getcwd()
 
 if convert_mp3 and not PYDUB_AVAILABLE:
@@ -55,7 +66,16 @@ log_area = st.empty()
 def log(msg):
     log_area.text(msg)
 
+# Keep the fetched-download UI visible across reruns by caching fetched streams
+# If the user presses Start download, or we already have cached streams for the current URL,
+# render the download controls.
+show_download_ui = download_btn or (st.session_state.get('fetched_streams') and st.session_state.get('fetched_url') == url)
+
 if download_btn:
+    # mark that we should keep the UI visible for this URL
+    st.session_state['fetched_url'] = url
+
+if show_download_ui:
     if not url:
         st.error('Please provide a YouTube URL.')
     else:
@@ -140,7 +160,13 @@ if download_btn:
                         st.write(r)
             else:
                 st.info('Fetching video info...')
-                streams = get_video_streams(url)
+                # Try to reuse cached streams for the same URL to avoid disappearing UI after actions
+                if st.session_state.get('fetched_url') == url and st.session_state.get('fetched_streams'):
+                    streams = st.session_state['fetched_streams']
+                else:
+                    streams = get_video_streams(url)
+                    st.session_state['fetched_streams'] = streams
+                    st.session_state['fetched_url'] = url
                 st.write(f"Title: {streams.get('title')}")
 
                 # If get_video_streams returned a yt-dlp info dict, offer only yt-dlp download path
@@ -148,35 +174,41 @@ if download_btn:
                     st.info('Metadata fetched via yt-dlp (pytube failed). Use yt-dlp backend to download.')
                     if mode == 'Video':
                         if st.button('Download video now (yt-dlp)'):
-                            import threading
-
+                            # show live progress inline if user requested; otherwise run in background
                             progress_bar = st.progress(0)
                             status_text = st.empty()
 
                             def ytdlp_progress(fn, downloaded, total, speed, eta):
                                 try:
                                     pct = int(downloaded / total * 100) if total and total > 0 else 0
-                                    # update widgets from main thread is best-effort; Streamlit may not reflect immediately
                                     progress_bar.progress(min(pct, 100))
                                     status_text.text(f"{downloaded:,} / {total:,} bytes — {human_speed(speed)} — ETA {eta}s")
                                 except Exception:
                                     pass
 
-                            def _bg_download():
+                            if show_live_progress:
+                                # run inline and block UI while downloading so user sees live progress
                                 try:
                                     fname = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=ytdlp_progress)
-                                    # store result in session_state so user can see it
                                     st.session_state['last_download'] = fname
+                                    st.success(f'Downloaded to: {fname}')
                                 except Exception as e:
-                                    st.session_state['last_download_error'] = str(e)
+                                    st.error(f'YT-DLP download failed: {e}')
+                            else:
+                                import threading
 
-                            threading.Thread(target=_bg_download, daemon=True).start()
-                            st.info('Download started in background — check downloads folder and server logs.')
+                                def _bg_download():
+                                    try:
+                                        fname = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=ytdlp_progress)
+                                        st.session_state['last_download'] = fname
+                                    except Exception as e:
+                                        st.session_state['last_download_error'] = str(e)
+
+                                threading.Thread(target=_bg_download, daemon=True).start()
+                                st.info('Download started in background — check downloads folder and server logs.')
                     else:
                         # audio
                         if st.button('Download audio now (yt-dlp)'):
-                            import threading
-
                             progress_bar = st.progress(0)
                             status_text = st.empty()
 
@@ -188,15 +220,25 @@ if download_btn:
                                 except Exception:
                                     pass
 
-                            def _bg_download_audio():
+                            if show_live_progress:
                                 try:
                                     fname = download_with_ytdlp(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=ytdlp_progress)
                                     st.session_state['last_download'] = fname
+                                    st.success(f'Downloaded to: {fname}')
                                 except Exception as e:
-                                    st.session_state['last_download_error'] = str(e)
+                                    st.error(f'YT-DLP download failed: {e}')
+                            else:
+                                import threading
 
-                            threading.Thread(target=_bg_download_audio, daemon=True).start()
-                            st.info('Audio download started in background — check downloads folder and server logs.')
+                                def _bg_download_audio():
+                                    try:
+                                        fname = download_with_ytdlp(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=ytdlp_progress)
+                                        st.session_state['last_download'] = fname
+                                    except Exception as e:
+                                        st.session_state['last_download_error'] = str(e)
+
+                                threading.Thread(target=_bg_download_audio, daemon=True).start()
+                                st.info('Audio download started in background — check downloads folder and server logs.')
                 else:
                     # original pytube-based path
                     if mode == 'Video':
@@ -302,4 +344,5 @@ if download_btn:
 
                 
         except Exception as e:
-            st.error(f'Error: {e}')
+            # show full traceback in the Streamlit UI to aid debugging (400 errors, etc.)
+            st.exception(e)

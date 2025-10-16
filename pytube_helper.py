@@ -7,6 +7,8 @@ from pytube.cli import on_progress
 from typing import Callable, Optional, List
 import time
 import math
+from urllib.parse import urlparse, parse_qs
+import logging
 
 try:
     import yt_dlp
@@ -26,6 +28,46 @@ def is_ffmpeg_available() -> bool:
     return shutil.which('ffmpeg') is not None
 
 
+# module logger
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    # basic configuration for local debugging
+    logging.basicConfig(level=logging.INFO)
+
+
+def _normalize_video_url(url: str) -> str:
+    """Normalize many YouTube URL forms to https://www.youtube.com/watch?v=<id>.
+
+    This strips extra query params (for example `?si=...`) which can cause pytube's
+    innertube requests to fail with HTTP 400 on some URLs (observed with youtu.be links).
+    """
+    try:
+        parsed = urlparse(url)
+        # handle youtu.be short links
+        if parsed.netloc.endswith('youtu.be'):
+            vid = parsed.path.lstrip('/')
+            # remove any query/fragment
+            if vid:
+                return f'https://www.youtube.com/watch?v={vid}'
+
+        # for youtube.com links, prefer the v= query param when present
+        if parsed.netloc.endswith('youtube.com') or 'youtube' in parsed.netloc:
+            qs = parse_qs(parsed.query)
+            v = qs.get('v')
+            if v:
+                return f'https://www.youtube.com/watch?v={v[0]}'
+            # handle /shorts/<id>
+            parts = parsed.path.split('/')
+            if 'shorts' in parts:
+                idx = parts.index('shorts')
+                if idx + 1 < len(parts):
+                    return f'https://www.youtube.com/watch?v={parts[idx+1]}'
+    except Exception:
+        # if anything goes wrong, just return original URL
+        return url
+    return url
+
+
 def get_video_streams(url: str):
     """Return available streams for a YouTube URL.
 
@@ -34,7 +76,10 @@ def get_video_streams(url: str):
     # Try pytube first. If it fails (e.g. HTTP 400 from innertube), and yt-dlp is
     # available, fall back to yt-dlp metadata extraction so the UI can continue.
     try:
-        yt = YouTube(url, on_progress_callback=on_progress)
+        norm_url = _normalize_video_url(url)
+        if norm_url != url:
+            logger.info('Normalized URL: %s -> %s', url, norm_url)
+        yt = YouTube(norm_url, on_progress_callback=on_progress)
         progressive = sorted([s for s in yt.streams.filter(progressive=True, file_extension='mp4')],
                             key=lambda s: int(s.resolution.replace('p','')) if s.resolution else 0,
                             reverse=True)
@@ -51,7 +96,9 @@ def get_video_streams(url: str):
             'adaptive_video': adaptive_video,
             'audio': audio_streams,
         }
-    except Exception:
+    except Exception as e:
+        # log the underlying error for diagnostics
+        logger.exception('pytube failed to fetch metadata for url=%s', url)
         # fallback: use yt-dlp to obtain metadata (if available)
         if YTDLP_AVAILABLE:
             try:
@@ -65,9 +112,14 @@ def get_video_streams(url: str):
                     'yt_dlp_info': info,
                 }
             except Exception:
-                # re-raise original behavior: let caller handle
-                raise
-        raise
+                logger.exception('yt-dlp fallback also failed for url=%s', url)
+                # surface clearer error
+                raise RuntimeError(f'Failed to fetch metadata via yt-dlp for {url}') from e
+        # if yt-dlp is not available, raise a helpful error to the caller
+        raise RuntimeError(
+            f'pytube failed to fetch metadata for {url}: {e}.\n'
+            'Consider installing yt-dlp (`pip install yt-dlp`) to enable a fallback or check the URL/connection.'
+        ) from e
 
 
 def download_video(stream, output_path, filename=None, progress_callback: Optional[Callable[[int, int], None]] = None):
