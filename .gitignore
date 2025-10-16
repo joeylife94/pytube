@@ -1,6 +1,41 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# MacOS
+.DS_Store
+
+# Playwright / browser caches
+.cache/ms-playwright/
+
+# Generated screenshots and test artifacts
+screenshots/
+scripts/screenshots/
+
+# Local ffmpeg binaries
+scripts/ffmpeg/
+
+# pytest cache
+.pytest_cache/
+
+# logs
+*.log
+
+# temporary
+*.tmp# Python
+__pycache__/
+*.py[cod]
 *$py.class
 
 # Virtual environment
