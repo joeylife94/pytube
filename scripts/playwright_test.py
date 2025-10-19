@@ -64,12 +64,14 @@ def run_playwright_test():
         # Wait for metadata/title to appear (the app writes a 'Title:' line or an info message)
         # Wait longer for metadata to appear (Streamlit may take time to fetch)
         try:
-            page.wait_for_selector('text=Title:', timeout=60000)
+            # wait up to 600s for metadata (600000 ms)
+            page.wait_for_selector('text=Title:', timeout=600000)
             print('Metadata title appeared')
         except Exception:
             # fallback: wait for the yt-dlp info message
             try:
-                page.wait_for_selector('text=Metadata fetched via yt-dlp', timeout=30000)
+                # wait up to 600s for yt-dlp fallback metadata
+                page.wait_for_selector('text=Metadata fetched via yt-dlp', timeout=600000)
                 print('Metadata fetched via yt-dlp appeared')
             except Exception as e:
                 print('Metadata did not appear before timeout:', e)
@@ -83,7 +85,8 @@ def run_playwright_test():
 
         # Try to find and click the download button
         try:
-            page.wait_for_selector('text=Download video now (yt-dlp)', timeout=30000)
+            # wait up to 600s for download button to appear
+            page.wait_for_selector('text=Download video now (yt-dlp)', timeout=600000)
             page.click('text=Download video now (yt-dlp)')
             print('Clicked Download video now (yt-dlp)')
         except Exception as e:
@@ -101,9 +104,10 @@ def run_playwright_test():
             raise
 
         # Capture live progress screenshots for up to 30s
-        for i in range(90):
-            page.screenshot(path=f'scripts/screenshots/progress_{i:02d}.png')
-            time.sleep(1)
+        # Capture live progress screenshots for up to ~600s, once every 2s (≈300 captures)
+        for i in range(300):
+            page.screenshot(path=f'scripts/screenshots/progress_{i:03d}.png')
+            time.sleep(2)
 
         page.screenshot(path='scripts/screenshots/final.png')
         print('Screenshots saved to scripts/screenshots/')
