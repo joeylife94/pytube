@@ -1,6 +1,8 @@
 import os
 import streamlit as st
 from pytube_helper import get_video_streams, download_video, download_audio, download_playlist, PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback, download_with_ytdlp
+from progress_store import progress_file_for_id, read_progress_file, list_progress_files
+import uuid
 from pytube import Playlist
 import time
 
@@ -196,16 +198,31 @@ if show_download_ui:
                                     st.error(f'YT-DLP download failed: {e}')
                             else:
                                 import threading
+                                # create a per-download progress file so other sessions can poll it
+                                uid = str(uuid.uuid4())
+                                pf = progress_file_for_id(output_folder, uid)
 
                                 def _bg_download():
                                     try:
-                                        fname = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=ytdlp_progress)
+                                        fname = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=ytdlp_progress, progress_file=pf)
+                                        # write final status
+                                        try:
+                                            write_progress = None
+                                            from progress_store import write_progress_file
+                                            write_progress_file(pf, {'status': 'completed', 'filename': fname})
+                                        except Exception:
+                                            pass
                                         st.session_state['last_download'] = fname
                                     except Exception as e:
+                                        try:
+                                            from progress_store import write_progress_file
+                                            write_progress_file(pf, {'status': 'error', 'error': str(e)})
+                                        except Exception:
+                                            pass
                                         st.session_state['last_download_error'] = str(e)
 
                                 threading.Thread(target=_bg_download, daemon=True).start()
-                                st.info('Download started in background — check downloads folder and server logs.')
+                                st.info(f'Download started in background — progress file: {pf} (pollable)')
                     else:
                         # audio
                         if st.button('Download audio now (yt-dlp)'):
@@ -289,14 +306,37 @@ if show_download_ui:
 
                                 with st.spinner('Downloading...'):
                                     if backend == 'yt-dlp':
-                                        out = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                            out = download_with_ytdlp(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
                                     elif backend == 'pytube then yt-dlp fallback':
-                                        out = download_fallback(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                            out = download_fallback(url, output_folder, audio_only=False, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
                                     else:
                                         out = download_video(stream, output_folder, progress_callback=progress_cb)
                                 progress_bar.progress(100)
                                 status_text.text('Completed')
                                 st.success(f'Downloaded to: {out}')
+
+                    # show active progress files for background downloads in the output folder
+                    try:
+                        pfs = list_progress_files(output_folder)
+                        if pfs:
+                            st.subheader('Background downloads')
+                            for pf in pfs:
+                                info = read_progress_file(pf)
+                                title = info.get('filename') or info.get('title') or pf
+                                status = info.get('status') or 'unknown'
+                                downloaded = info.get('downloaded') or info.get('downloaded_bytes') or 0
+                                total = info.get('total') or info.get('total_bytes') or 0
+                                if total and total > 0:
+                                    pct = int(downloaded / total * 100)
+                                else:
+                                    pct = 0
+                                st.write(f"{title}: {status} — {downloaded:,}/{total:,} bytes ({pct}%)")
+                                if status == 'completed':
+                                    st.success(f"Completed: {info.get('filename')}")
+                                if status == 'error':
+                                    st.error(f"Error: {info.get('error')}")
+                    except Exception:
+                        pass
 
                     else:
                         # Audio mode

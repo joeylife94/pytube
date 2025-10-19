@@ -81,3 +81,23 @@ Open the URL shown by Streamlit (typically http://localhost:8501) in your browse
 If you'd like, I can also:
 - Add a `dev-requirements.txt` with Playwright and test helpers.
 - Add a GitHub Actions job to run Playwright tests (will increase job runtime because browsers must be downloaded).
+
+Dev requirements
+----------------
+If you plan to run the Playwright automation or developer tests, install the dev requirements:
+
+```powershell
+python -m pip install -r dev-requirements.txt
+python -m playwright install --with-deps chromium
+```
+
+`dev-requirements.txt` in this repo includes:
+- playwright
+- pytest
+- yt-dlp
+
+CI notes
+--------
+On CI (GitHub Actions) we recommend:
+- Install the dev requirements and run `python -m playwright install --with-deps chromium` before running Playwright scripts.
+- Start Streamlit and poll `http://localhost:8501/` until ready before executing Playwright.

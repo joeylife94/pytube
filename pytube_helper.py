@@ -236,7 +236,8 @@ def has_yt_dlp() -> bool:
 
 
 def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, convert_mp3: bool = False,
-                        progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None):
+                        progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
+                        progress_file: Optional[str] = None):
     """Download using yt-dlp programmatic API.
 
     progress_callback signature: fn(filename, received_bytes, total_bytes, speed_bytes_per_s, eta_seconds)
@@ -266,6 +267,20 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, co
                     progress_callback(filename, downloaded, total, speed, eta)
                 except Exception:
                     pass
+            # write to progress file if provided
+            if progress_file:
+                try:
+                    from progress_store import write_progress_file
+                    write_progress_file(progress_file, {
+                        'status': 'downloading',
+                        'filename': filename,
+                        'downloaded': int(downloaded),
+                        'total': int(total),
+                        'speed': float(speed),
+                        'eta': int(eta),
+                    })
+                except Exception:
+                    pass
 
     ydl_opts['progress_hooks'] = [_hook]
 
@@ -276,11 +291,22 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, co
             fname = info['requested_downloads'][0].get('filepath')
         else:
             fname = ydl.prepare_filename(info)
+    # write completed status
+    if progress_file:
+        try:
+            from progress_store import write_progress_file
+            write_progress_file(progress_file, {
+                'status': 'completed',
+                'filename': fname,
+            })
+        except Exception:
+            pass
         return fname
 
 
 def download_fallback(url: str, output_path: str, audio_only: bool = False, convert_mp3: bool = False,
-                      progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None):
+                      progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
+                      progress_file: Optional[str] = None):
     """Try pytube first, fallback to yt-dlp on error. progress_callback signature matches download_with_ytdlp.
     For pytube path we call progress_callback(filename, received, total, speed, eta) where speed/eta are estimated.
     """
@@ -318,13 +344,14 @@ def download_fallback(url: str, output_path: str, audio_only: bool = False, conv
     except Exception:
         # fallback to yt-dlp if available
         if YTDLP_AVAILABLE:
-            return download_with_ytdlp(url, output_path, audio_only=audio_only, convert_mp3=convert_mp3, progress_callback=progress_callback)
+            return download_with_ytdlp(url, output_path, audio_only=audio_only, convert_mp3=convert_mp3, progress_callback=progress_callback, progress_file=progress_file)
         raise
 
 
 def download_playlist(playlist_url: str, output_path: str, resolution_preference: Optional[str] = None,
                       audio_only: bool = False, convert_mp3: bool = False, concurrency: int = 3,
                       per_item_callback: Optional[Callable[[str, str, str, int, int, int, float, int], None]] = None,
+                      progress_dir: Optional[str] = None,
                       max_retries: int = 2, backoff_factor: float = 1.5) -> List[str]:
     """Download all videos in a playlist, optionally in parallel.
 
@@ -383,6 +410,14 @@ def download_playlist(playlist_url: str, output_path: str, resolution_preference
                                 per_item_callback(title, 'downloading', video_url, index, int(received), int(total), 0.0, 0.0)
                             except Exception:
                                 pass
+                        # write to per-item progress file if requested
+                        if progress_dir:
+                            try:
+                                from progress_store import write_progress_file, progress_file_for_id
+                                pf = progress_file_for_id(output_path, f'playlist_{index}')
+                                write_progress_file(pf, {'title': title, 'status': 'downloading', 'downloaded': int(received), 'total': int(total)})
+                            except Exception:
+                                pass
 
                     out = download_audio(stream, output_path, filename=_safe_filename(title), convert_mp3=convert_mp3, progress_callback=audio_cb)
                     if per_item_callback:
@@ -421,12 +456,26 @@ def download_playlist(playlist_url: str, output_path: str, resolution_preference
                                 per_item_callback(title, 'downloading', video_url, index, int(received), int(total), float(speed), int(eta))
                             except Exception:
                                 pass
+                        if progress_dir:
+                            try:
+                                from progress_store import write_progress_file, progress_file_for_id
+                                pf = progress_file_for_id(output_path, f'playlist_{index}')
+                                write_progress_file(pf, {'title': title, 'status': 'downloading', 'downloaded': int(received), 'total': int(total), 'speed': float(speed), 'eta': int(eta)})
+                            except Exception:
+                                pass
 
                     try:
                         out = download_video(stream, output_path, filename=_safe_filename(title), progress_callback=video_cb)
                         if per_item_callback:
                             try:
                                 per_item_callback(title, 'completed', video_url, index, int(last_received['v']), 0, 0.0, 0.0)
+                            except Exception:
+                                pass
+                        if progress_dir:
+                            try:
+                                from progress_store import write_progress_file, progress_file_for_id
+                                pf = progress_file_for_id(output_path, f'playlist_{index}')
+                                write_progress_file(pf, {'title': title, 'status': 'completed', 'downloaded': int(last_received['v'])})
                             except Exception:
                                 pass
                         return out, title, 'ok'

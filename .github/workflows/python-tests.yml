@@ -37,11 +37,25 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Start Streamlit app in background
         run: |
+          # Start streamlit in background and poll until the app responds on port 8501
           python -m pip install --upgrade pip
-          . .venv || true
-          nohup bash -c "python -m streamlit run app.py &> streamlit.log &" || (python -m streamlit run app.py &)
+          # Use a robust background start and healthcheck loop
+          nohup python -m streamlit run app.py &> streamlit.log &
+          # wait for localhost:8501 to respond (timeout ~60s)
+          for i in {1..60}; do
+            if curl -sSf http://localhost:8501/ > /dev/null; then
+              echo "Streamlit started"
+              break
+            fi
+            sleep 1
+          done
       - name: Wait for app to start
-        run: sleep 5
+        run: |
+          if ! curl -sSf http://localhost:8501/; then
+            echo "Streamlit did not start in time" >&2
+            cat streamlit.log || true
+            exit 1
+          fi
       - name: Run Playwright UI test (headless)
         env:
           PLAYWRIGHT_HEADLESS: '1'
