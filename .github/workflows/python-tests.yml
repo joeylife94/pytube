@@ -33,10 +33,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r dev-requirements.txt
-      - name: Install system dependencies for Playwright
+      - name: Install system dependencies for Playwright (robust)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxss1 libasound2 libgbm1 libgtk-3-0 libx11-xcb1 libxcb1
+          PKGS="libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxss1 libasound2 libgbm1 libgtk-3-0 libx11-xcb1 libxcb1"
+          for p in $PKGS; do
+            echo "Checking package: $p"
+            if apt-cache policy "$p" | grep -q 'Candidate:'; then
+              echo "Installing $p"
+              sudo apt-get install -y --no-install-recommends "$p"
+            else
+              # try fallback for libasound2 on newer Ubuntu variants
+              if [ "$p" = "libasound2" ]; then
+                if apt-cache policy libasound2t64 | grep -q 'Candidate:'; then
+                  echo "Installing libasound2t64 as fallback for libasound2"
+                  sudo apt-get install -y --no-install-recommends libasound2t64
+                  continue
+                fi
+              fi
+              echo "Package $p not available - skipping"
+            fi
+          done
       - name: Install Playwright browsers (all)
         run: python -m playwright install --with-deps && python -m playwright install chromium firefox webkit
       - name: Start Streamlit app in background
