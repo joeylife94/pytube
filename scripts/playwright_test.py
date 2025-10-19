@@ -1,11 +1,19 @@
 from playwright.sync_api import sync_playwright
 import time
+import os
+from pathlib import Path
 
 APP_URL = 'http://localhost:8501'
 TEST_URL = 'https://youtu.be/-CpaiHzIRNc?si=OdbUScvmYnvPXUjf'
 
+# Decide headless mode: in CI we run headless. You can force headless by setting PLAYWRIGHT_HEADLESS=1
+HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS') == '1' or os.getenv('CI') is not None
+
+screenshots_dir = Path('scripts') / 'screenshots'
+screenshots_dir.mkdir(parents=True, exist_ok=True)
+
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=HEADLESS)
     context = browser.new_context()
     page = context.new_page()
 
