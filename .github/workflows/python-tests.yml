@@ -33,10 +33,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r dev-requirements.txt
-      - name: Setup Playwright (install browsers and system deps)
-        uses: microsoft/playwright@v1
-        with:
-          browsers: chromium,firefox,webkit
+      - name: Install Playwright and browsers (pip + safe fallback)
+        run: |
+          python -m pip install --upgrade pip
+          # ensure playwright is installed (dev-requirements may already provide it)
+          python -m pip install playwright || true
+          # try to install with system deps; if that fails, fall back to per-browser installs
+          python -m playwright install --with-deps || true
+          python -m playwright install chromium firefox webkit || true
       - name: Start Streamlit app in background
         run: |
           # Start streamlit in background and poll until the app responds on port 8501
