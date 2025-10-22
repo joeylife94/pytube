@@ -1,21 +1,83 @@
+"""Streamlit-based YouTube downloader GUI application."""
 import os
 import streamlit as st
-from pytube_helper import get_video_streams, download_video, download_audio, download_playlist, PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback, download_with_ytdlp
+from pytube_helper import (
+    get_video_streams, download_video, download_audio, download_playlist,
+    PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback,
+    download_with_ytdlp
+)
 from progress_store import progress_file_for_id, read_progress_file, list_progress_files
 import uuid
 from pytube import Playlist
 import time
+from typing import Optional, Callable
 
 
 def human_speed(bps: float) -> str:
-    # human readable bytes/sec
+    """Convert bytes per second to human-readable format.
+    
+    Args:
+        bps: Bytes per second
+        
+    Returns:
+        Human-readable speed string
+    """
     for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
         if bps < 1024.0:
             return f"{bps:3.1f}{unit}"
         bps /= 1024.0
     return f"{bps:.1f}TB/s"
 
-st.set_page_config(page_title='pytube GUI', layout='centered')
+def create_progress_callback(start_time: dict, progress_bar, status_text):
+    """Create a standardized progress callback for downloads.
+    
+    Args:
+        start_time: Dict with 't' key to track start time
+        progress_bar: Streamlit progress bar widget
+        status_text: Streamlit text widget for status updates
+        
+    Returns:
+        Progress callback function
+    """
+    def progress_cb(received: int, total: int):
+        now = time.time()
+        if start_time['t'] is None:
+            start_time['t'] = now
+        elapsed = max(now - start_time['t'], 1e-6)
+        speed = received / elapsed
+        eta = int((total - received) / speed) if speed > 0 else 0
+        try:
+            percent = int(received / total * 100)
+            progress_bar.progress(min(percent, 100))
+            status_text.text(
+                f"{received:,} / {total:,} bytes ({percent}%) — "
+                f"{human_speed(speed)} — ETA {eta}s"
+            )
+        except Exception:
+            pass
+    
+    return progress_cb
+
+
+def ensure_output_folder(folder: str) -> str:
+    """Ensure the output folder exists.
+    
+    Args:
+        folder: Desired output folder path
+        
+    Returns:
+        Valid output folder path
+    """
+    if not folder:
+        folder = os.path.join(os.getcwd(), 'downloads')
+    
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        st.warning(f'Could not create output folder: {folder}. Falling back to current directory')
+        folder = os.getcwd()
+    
+    return folder
 
 st.title('YouTube Downloader (pytube)')
 
