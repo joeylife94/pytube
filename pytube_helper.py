@@ -259,6 +259,19 @@ def has_yt_dlp() -> bool:
     return YTDLP_AVAILABLE
 
 
+def _get_ffmpeg_location_from_env() -> Optional[str]:
+    """Return ffmpeg location from env vars if configured.
+
+    yt-dlp supports `ffmpeg_location` pointing to an ffmpeg binary or a directory.
+    We keep this optional so normal PATH-based resolution still works.
+    """
+    for key in ("FFMPEG_LOCATION", "FFMPEG_PATH", "FFMPEG_BIN"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
 def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, 
                         convert_mp3: bool = False,
                         progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
@@ -282,18 +295,62 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
     if not YTDLP_AVAILABLE:
         raise RuntimeError('yt-dlp is not available')
 
+    # sensible defaults (mimic options used in downloader_manager._build_ytdlp_opts)
     ydl_opts = {
         'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
         'quiet': True,
+        'no_warnings': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web'],
+                'player_skip': ['configs'],
+            }
+        },
+        'nocheckcertificate': True,
+        'no_check_certificate': True,
+        'age_limit': None,
     }
+
+    ffmpeg_location = _get_ffmpeg_location_from_env()
+    if ffmpeg_location:
+        ydl_opts['ffmpeg_location'] = ffmpeg_location
+
+    if audio_only and convert_mp3:
+        # yt-dlp invokes ffmpeg for FFmpegExtractAudio; fail early with a clear message.
+        if not ffmpeg_location and shutil.which('ffmpeg') is None:
+            raise RuntimeError(
+                "MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH, "
+                "or set FFMPEG_LOCATION (or FFMPEG_PATH/FFMPEG_BIN) to the ffmpeg binary or directory."
+            )
+
     if audio_only:
-        ydl_opts.update({'format': 'bestaudio/best', 'postprocessors': []})
+        ydl_opts['format'] = 'bestaudio/best'
+        if convert_mp3:
+            # Convert to MP3 using ffmpeg via yt-dlp postprocessor.
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        else:
+            ydl_opts['postprocessors'] = []
     
     ydl_opts['progress_hooks'] = [_create_ytdlp_progress_hook(progress_callback, progress_file)]
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         fname = _get_downloaded_filename(ydl, info)
+
+    # yt-dlp returns the pre-postprocess filename in many cases; if we requested
+    # MP3 conversion, the final file should be the same base name with .mp3.
+    if audio_only and convert_mp3 and fname:
+        base, _ext = os.path.splitext(fname)
+        fname = base + '.mp3'
     
     _write_completion_status(progress_file, fname)
     return fname
@@ -440,6 +497,7 @@ def download_playlist(playlist_url: str, output_path: str,
                       resolution_preference: Optional[str] = None,
                       audio_only: bool = False, convert_mp3: bool = False, 
                       concurrency: int = DEFAULT_CONCURRENCY,
+                      max_items: Optional[int] = None,
                       per_item_callback: Optional[Callable[[str, str, str, int, int, int, float, int], None]] = None,
                       progress_dir: Optional[str] = None,
                       max_retries: int = DEFAULT_MAX_RETRIES, 
@@ -468,6 +526,14 @@ def download_playlist(playlist_url: str, output_path: str,
 
     video_urls = _extract_playlist_urls(playlist_url)
 
+    if max_items is not None:
+        try:
+            max_n = int(max_items)
+        except Exception:
+            max_n = 0
+        if max_n > 0:
+            video_urls = video_urls[:max_n]
+
     def _download_one(video_url, index=None):
         attempts = 0
         while attempts <= max_retries:
@@ -475,26 +541,45 @@ def download_playlist(playlist_url: str, output_path: str,
                 streams = get_video_streams(video_url)
                 title = streams['title']
                 if audio_only:
-                    if not streams['audio']:
-                        return None, title, 'no-audio'
-                    stream = streams['audio'][0]
+                    # Prefer yt-dlp for MP3 conversion in playlists (more reliable than pytube+pydub).
+                    if convert_mp3 and YTDLP_AVAILABLE:
+                        def ytdlp_cb(fn, downloaded, total, speed, eta):
+                            if per_item_callback:
+                                try:
+                                    per_item_callback(title, 'downloading', video_url, index, int(downloaded or 0), int(total or 0), float(speed or 0.0), int(eta or 0))
+                                except Exception:
+                                    pass
 
-                    def audio_cb(received, total):
-                        if per_item_callback:
-                            try:
-                                per_item_callback(title, 'downloading', video_url, index, int(received), int(total), 0.0, 0.0)
-                            except Exception:
-                                pass
-                        # write to per-item progress file if requested
+                        pf = None
                         if progress_dir:
                             try:
-                                from progress_store import write_progress_file, progress_file_for_id
+                                from progress_store import progress_file_for_id
                                 pf = progress_file_for_id(output_path, f'playlist_{index}')
-                                write_progress_file(pf, {'title': title, 'status': 'downloading', 'downloaded': int(received), 'total': int(total)})
                             except Exception:
-                                pass
+                                pf = None
 
-                    out = download_audio(stream, output_path, filename=_safe_filename(title), convert_mp3=convert_mp3, progress_callback=audio_cb)
+                        out = download_with_ytdlp(video_url, output_path, audio_only=True, convert_mp3=True, progress_callback=ytdlp_cb, progress_file=pf)
+                    else:
+                        if not streams['audio']:
+                            return None, title, 'no-audio'
+                        stream = streams['audio'][0]
+
+                        def audio_cb(received, total):
+                            if per_item_callback:
+                                try:
+                                    per_item_callback(title, 'downloading', video_url, index, int(received), int(total), 0.0, 0.0)
+                                except Exception:
+                                    pass
+                            # write to per-item progress file if requested
+                            if progress_dir:
+                                try:
+                                    from progress_store import write_progress_file, progress_file_for_id
+                                    pf = progress_file_for_id(output_path, f'playlist_{index}')
+                                    write_progress_file(pf, {'title': title, 'status': 'downloading', 'downloaded': int(received), 'total': int(total)})
+                                except Exception:
+                                    pass
+
+                        out = download_audio(stream, output_path, filename=_safe_filename(title), convert_mp3=convert_mp3, progress_callback=audio_cb)
                     if per_item_callback:
                         try:
                             per_item_callback(title, 'completed', video_url, index, 0, 0, 0.0, 0.0)
@@ -618,25 +703,32 @@ def _extract_playlist_urls(playlist_url: str) -> List[str]:
     """
     try:
         pl = Playlist(playlist_url)
-        video_urls = pl.video_urls
+        # force evaluation of the playlist generator so extraction errors
+        # from pytube are raised here and can be caught for fallback.
+        video_urls = list(pl.video_urls)
     except Exception as e:
         if not YTDLP_AVAILABLE:
             raise RuntimeError(
                 f'Could not parse playlist URL: {e}. '
                 'Install yt-dlp to enable fallback extraction.'
             ) from e
-        
+
         try:
             video_urls = _extract_playlist_urls_with_ytdlp(playlist_url)
         except Exception as ytdlp_error:
             raise RuntimeError(
-                f'Could not parse playlist URL or extract entries: {e}'
+                f'Could not parse playlist URL or extract entries: {e} / {ytdlp_error}'
             ) from ytdlp_error
     
     if not video_urls:
         raise RuntimeError('No videos found in playlist')
     
     return video_urls
+
+
+def extract_playlist_urls(playlist_url: str) -> List[str]:
+    """Public wrapper for playlist URL extraction with yt-dlp fallback."""
+    return _extract_playlist_urls(playlist_url)
 
 
 def _extract_playlist_urls_with_ytdlp(playlist_url: str) -> List[str]:
@@ -648,17 +740,31 @@ def _extract_playlist_urls_with_ytdlp(playlist_url: str) -> List[str]:
     Returns:
         List of video URLs
     """
-    ydl_opts = {'quiet': True, 'extract_flat': True}
+    # Try an initial shallow extraction (fast). If that returns no entries
+    # some playlist pages require full extraction — retry with
+    # `extract_flat=False` to obtain concrete entries.
     video_urls = []
-    
+    ydl_opts = {'quiet': True, 'extract_flat': True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
-        entries = info.get('entries', [])
+        entries = info.get('entries') or []
         for entry in entries:
             if isinstance(entry, dict):
                 url = entry.get('webpage_url') or entry.get('url')
                 if url:
                     video_urls.append(url)
+
+    if not video_urls:
+        # Fall back to full extraction (may be slower) to collect entries.
+        ydl_opts = {'quiet': True, 'extract_flat': False}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+            entries = info.get('entries') or []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    url = entry.get('webpage_url') or entry.get('url')
+                    if url:
+                        video_urls.append(url)
     
     return video_urls
 

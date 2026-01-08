@@ -31,6 +31,18 @@ python -m pip install -r requirements.txt
 
 Note: To convert to MP3 you need `ffmpeg` installed and available on PATH. Download from https://ffmpeg.org/ and add to PATH.
 
+If you can't (or don't want to) modify your PATH, you can point yt-dlp to ffmpeg directly by setting one of these environment variables:
+- `FFMPEG_LOCATION` (preferred)
+- `FFMPEG_PATH`
+- `FFMPEG_BIN`
+
+Tip: If `ffmpeg` is installed but not on PATH (or you want to pin a specific build), set one of these environment variables before running the app:
+- `FFMPEG_LOCATION` (preferred)
+- `FFMPEG_PATH`
+- `FFMPEG_BIN`
+
+They may point to either the `ffmpeg` binary or a directory containing it.
+
 Run the app
 
 ```powershell
@@ -82,6 +94,9 @@ Notes & limitations
 - If pytube fails to fetch metadata or download, the app can optionally use `yt-dlp` as a fallback (install `yt-dlp` in the environment to enable this).
 - MP3 conversion requires pydub and ffmpeg; if pydub isn't installed the option will be disabled.
 - Playlist downloads skip items that fail and continue with the rest.
+
+Dependency note
+- `yt-dlp` is now included in `requirements.txt` because MP3/subtitles/playlist fallback rely on it.
 
 Recent changes (local development)
 - Added URL normalization to reduce pytube innertube HTTP 400 errors for short/youtu.be links.

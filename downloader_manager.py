@@ -6,6 +6,7 @@ Supports batch downloads, MP3 conversion, video+subtitles, and subtitles-only mo
 
 import os
 import logging
+import shutil
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -180,7 +181,6 @@ class YoutubeDownloader:
                 'youtube': {
                     'player_client': ['android', 'ios', 'web'],
                     'player_skip': ['configs'],
-                    'skip': ['hls', 'dash'],
                 }
             },
             # 추가 우회 옵션
@@ -198,6 +198,9 @@ class YoutubeDownloader:
             }
             
         elif mode == DownloadMode.MP3:
+            # MP3 conversion requires ffmpeg on PATH (yt-dlp calls it).
+            if shutil.which('ffmpeg') is None:
+                raise RuntimeError("MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH (or set FFMPEG_LOCATION).")
             # Download best audio and convert to MP3
             opts = {
                 **base_opts,

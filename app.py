@@ -4,7 +4,7 @@ import streamlit as st
 from pytube_helper import (
     get_video_streams, download_video, download_audio, download_playlist,
     PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback,
-    download_with_ytdlp
+    download_with_ytdlp, extract_playlist_urls
 )
 from progress_store import progress_file_for_id, read_progress_file, list_progress_files
 import uuid
@@ -175,9 +175,11 @@ if show_download_ui:
                 else:
                     st.warning('Parallel downloads enabled — live per-item streaming logs are limited. You will see a summary when done.')
                     # prepare placeholders in session_state for each playlist item (with progress bars)
-                    from pytube import Playlist as PTPlaylist
-                    playlist_obj = PTPlaylist(url)
-                    urls = playlist_obj.video_urls
+                    try:
+                        urls = extract_playlist_urls(url)
+                    except Exception as e:
+                        st.error(f'Could not parse playlist: {e}')
+                        urls = []
                     n = len(urls)
                     if 'playlist_items' not in st.session_state or len(st.session_state.get('playlist_items', [])) != n:
                         st.session_state['playlist_items'] = [
@@ -435,7 +437,7 @@ if show_download_ui:
 
                                 with st.spinner('Downloading audio...'):
                                     if backend == 'yt-dlp':
-                                        out = download_with_ytdlp(url, output_folder, audio_only=True, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
+                                        out = download_with_ytdlp(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
                                     elif backend == 'pytube then yt-dlp fallback':
                                         out = download_fallback(url, output_folder, audio_only=True, convert_mp3=convert_mp3, progress_callback=lambda f,r,t,s,e: progress_cb(r,t))
                                     else:
