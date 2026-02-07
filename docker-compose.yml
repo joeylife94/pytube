@@ -1,0 +1,23 @@
+services:
+  # Streamlit web UI
+  web:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./downloads:/app/downloads
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  # REST API server
+  api:
+    build: .
+    command: ["python", "api_server.py", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./downloads:/app/downloads
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

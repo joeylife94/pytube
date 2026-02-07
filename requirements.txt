@@ -3,5 +3,8 @@ pytube>=12.1
 pydub>=0.25.1
 yt-dlp
 pytest>=7.0
+fastapi>=0.100
+uvicorn>=0.20
+httpx>=0.24
 
 # Optional: ffmpeg is required by pydub to convert to mp3. On Windows, install ffmpeg and add to PATH.
