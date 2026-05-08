@@ -35,6 +35,8 @@ def test_download_with_ytdlp_sets_mp3_postprocessor_when_requested(tmp_path, mon
     # Force "yt-dlp is available" path and replace YoutubeDL with dummy
     monkeypatch.setattr(pytube_helper, 'YTDLP_AVAILABLE', True)
     monkeypatch.setattr(pytube_helper.yt_dlp, 'YoutubeDL', DummyYDL)
+    # Mock ffmpeg so the MP3 pre-check passes in environments without ffmpeg
+    monkeypatch.setattr(pytube_helper.shutil, 'which', lambda x: '/usr/bin/ffmpeg')
 
     out = download_with_ytdlp('https://example.invalid/video', str(tmp_path), audio_only=True, convert_mp3=True)
 

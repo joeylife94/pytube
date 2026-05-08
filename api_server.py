@@ -29,13 +29,24 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
     allow_methods=['*'],
     allow_headers=['*'],
 )
 
 DEFAULT_OUTPUT = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DEFAULT_OUTPUT, exist_ok=True)
+
+
+def _validate_output_folder(folder: str) -> str:
+    """Validate and resolve output folder, rejecting path traversal attempts."""
+    if not folder:
+        return DEFAULT_OUTPUT
+    # Reject any path that contains a '..' component before normalization resolves it
+    parts = folder.replace('\\', '/').split('/')
+    if '..' in parts:
+        raise HTTPException(status_code=400, detail='output_folder must not contain path traversal (..)')
+    return os.path.abspath(folder)
 
 # Shared queue instance
 _queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.queue.json'))
@@ -73,7 +84,8 @@ def _do_download(item: QueueItem, progress_cb):
     if item.subtitles:
         ydl_opts['writesubtitles'] = True
         ydl_opts['writeautomaticsub'] = True
-        ydl_opts['subtitleslangs'] = [item.subtitle_lang, 'en']
+        langs = [l.strip() for l in item.subtitle_lang.split(',') if l.strip()]
+        ydl_opts['subtitleslangs'] = langs or ['en']
         ydl_opts['subtitlesformat'] = 'srt/best'
     if item.rate_limit and item.rate_limit > 0:
         ydl_opts['ratelimit'] = item.rate_limit * 1024
@@ -171,7 +183,7 @@ def get_status():
 @app.post('/api/download', response_model=QueueItemResponse)
 def start_download(req: DownloadRequest):
     """Add a single URL to the download queue."""
-    out = req.output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(req.output_folder)
     os.makedirs(out, exist_ok=True)
 
     if req.skip_duplicates:
@@ -201,7 +213,7 @@ def start_download(req: DownloadRequest):
 @app.post('/api/batch', response_model=List[QueueItemResponse])
 def batch_download(req: BatchRequest):
     """Add multiple URLs to the download queue at once."""
-    out = req.output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(req.output_folder)
     os.makedirs(out, exist_ok=True)
 
     items = _queue.add_batch(
@@ -219,7 +231,7 @@ def batch_download(req: BatchRequest):
 @app.post('/api/playlist')
 def playlist_download(req: PlaylistRequest):
     """Fetch playlist info and add items to the queue."""
-    out = req.output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(req.output_folder)
 
     try:
         result = extract_playlist_urls_with_titles(req.url)
@@ -255,7 +267,7 @@ def playlist_download(req: PlaylistRequest):
 @app.post('/api/channel')
 def channel_download(req: PlaylistRequest):
     """Download all videos from a channel."""
-    out = req.output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(req.output_folder)
     try:
         result = extract_channel_videos(req.url, max_items=req.max_items or None)
     except Exception as e:
@@ -286,7 +298,7 @@ def channel_download(req: PlaylistRequest):
 @app.post('/api/schedule', response_model=QueueItemResponse)
 def schedule_download(req: ScheduleRequest):
     """Schedule a download for a specific time."""
-    out = req.output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(req.output_folder)
     os.makedirs(out, exist_ok=True)
 
     # Parse scheduled time
@@ -355,14 +367,14 @@ def clear_queue():
 @app.get('/api/history')
 def download_history(output_folder: str = '', limit: int = 50):
     """Get download history."""
-    out = output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(output_folder)
     return get_history(out, limit=limit)
 
 
 @app.delete('/api/history')
 def clear_download_history(output_folder: str = ''):
     """Clear download history."""
-    out = output_folder or DEFAULT_OUTPUT
+    out = _validate_output_folder(output_folder)
     n = clear_history(out)
     return {'cleared': n}
 

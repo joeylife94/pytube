@@ -173,39 +173,23 @@ def download_video(stream, output_path: str, filename: Optional[str] = None,
         return stream.download(output_path=output_path, filename=filename) if filename else stream.download(output_path=output_path)
 
 
-def _download_with_progress(stream, output_path: str, filename: Optional[str], 
+def _download_with_progress(stream, output_path: str, filename: Optional[str],
                             progress_callback: Callable[[int, int], None]) -> str:
     """Helper function to download with progress tracking.
-    
+
     Args:
         stream: pytube Stream object
         output_path: Directory to save the file
         filename: Optional custom filename
         progress_callback: Callback(bytes_received, total_bytes)
-        
+
     Returns:
         Path to the downloaded file
     """
-    yt = YouTube(stream.player_config_args.get('url')) if hasattr(stream, 'player_config_args') else None
-    
-    if yt is None:
-        # Fallback to direct download without progress
-        return stream.download(output_path=output_path, filename=filename) if filename else stream.download(output_path=output_path)
-
-    def _on_progress(s, chunk, bytes_remaining):
-        total = s.filesize
-        received = total - bytes_remaining
-        try:
-            progress_callback(received, total)
-        except Exception as e:
-            logger.warning(f'Progress callback error: {e}')
-
-    yt.register_on_progress_callback(_on_progress)
-    
-    # Find matching stream on this yt instance
-    candidate = next((s for s in yt.streams if s.itag == stream.itag), stream)
-    
-    return candidate.download(output_path=output_path, filename=filename) if filename else candidate.download(output_path=output_path)
+    # pytube 15.x removed player_config_args, so per-chunk progress tracking via
+    # register_on_progress_callback is not reachable through a stream object alone.
+    # Fall back to a direct stream download (progress callback is silently ignored).
+    return stream.download(output_path=output_path, filename=filename) if filename else stream.download(output_path=output_path)
 
 
 def download_audio(stream, output_path: str, filename: Optional[str] = None, 
@@ -249,6 +233,11 @@ def _convert_to_mp3_if_needed(audio_file: str, convert_mp3: bool) -> str:
         mp3_path = name + '.mp3'
         audio = AudioSegment.from_file(audio_file)
         audio.export(mp3_path, format='mp3')
+        # Remove the original (non-MP3) file to avoid leaving duplicates on disk
+        try:
+            os.remove(audio_file)
+        except OSError as rm_err:
+            logger.warning(f'Could not remove original audio file {audio_file}: {rm_err}')
         return mp3_path
     except Exception as e:
         logger.error(f'Failed to convert to MP3: {e}')
@@ -388,8 +377,8 @@ def _create_ytdlp_progress_hook(progress_callback: Optional[Callable],
             
         downloaded = d.get('downloaded_bytes', 0)
         total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-        speed = d.get('speed', 0.0)
-        eta = d.get('eta', 0)
+        speed = d.get('speed') or 0.0  # yt-dlp returns None during initial buffering
+        eta = d.get('eta') or 0
         filename = d.get('filename', '')
         
         if progress_callback:
@@ -406,8 +395,8 @@ def _create_ytdlp_progress_hook(progress_callback: Optional[Callable],
                     'filename': filename,
                     'downloaded': int(downloaded),
                     'total': int(total),
-                    'speed': float(speed),
-                    'eta': int(eta),
+                    'speed': float(speed or 0.0),
+                    'eta': int(eta or 0),
                 })
             except Exception as e:
                 logger.warning(f'Failed to write progress file: {e}')
@@ -508,18 +497,19 @@ def download_fallback(url: str, output_path: str, audio_only: bool = False,
         raise
 
 
-def download_playlist(playlist_url: str, output_path: str, 
+def download_playlist(playlist_url: str, output_path: str,
                       resolution_preference: Optional[str] = None,
-                      audio_only: bool = False, convert_mp3: bool = False, 
+                      audio_only: bool = False, convert_mp3: bool = False,
                       concurrency: int = DEFAULT_CONCURRENCY,
                       max_items: Optional[int] = None,
                       per_item_callback: Optional[Callable] = None,
                       prefer_ytdlp: bool = True,
                       progress_dir: Optional[str] = None,
-                      max_retries: int = DEFAULT_MAX_RETRIES, 
+                      max_retries: int = DEFAULT_MAX_RETRIES,
                       backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
                       subtitle_langs: Optional[List[str]] = None,
-                      rate_limit_kbps: int = 0) -> List[str]:
+                      rate_limit_kbps: int = 0,
+                      preset_urls: Optional[List[str]] = None) -> List[str]:
     """Download all videos in a playlist, optionally in parallel.
 
     Args:
@@ -545,8 +535,10 @@ def download_playlist(playlist_url: str, output_path: str,
     # Clean up leftover .part files to prevent WinError 32 rename failures
     cleanup_part_files(output_path)
 
-    # Extract playlist URLs
-    if YTDLP_AVAILABLE:
+    # Extract playlist URLs (skip extraction when caller provides pre-fetched list)
+    if preset_urls is not None:
+        video_urls = list(preset_urls)
+    elif YTDLP_AVAILABLE:
         try:
             video_urls = _extract_playlist_urls_with_ytdlp(playlist_url)
         except Exception:

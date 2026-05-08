@@ -13,7 +13,6 @@ from pytube_helper import (
 )
 from download_db import is_downloaded, record_download, get_history, clear_history
 from download_queue import DownloadQueue, QueueItemStatus
-from progress_store import progress_file_for_id, read_progress_file, list_progress_files
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +134,8 @@ def _get_queue() -> DownloadQueue:
             if item.subtitles:
                 ydl_opts['writesubtitles'] = True
                 ydl_opts['writeautomaticsub'] = True
-                ydl_opts['subtitleslangs'] = [item.subtitle_lang, 'en']
+                langs = [l.strip() for l in item.subtitle_lang.split(',') if l.strip()]
+                ydl_opts['subtitleslangs'] = langs or ['en']
                 ydl_opts['subtitlesformat'] = 'srt/best'
             if item.rate_limit > 0:
                 ydl_opts['ratelimit'] = item.rate_limit * 1024
@@ -380,14 +380,14 @@ with tab_channel:
                     except Exception:
                         pass
 
-                # Use playlist-style download with channel URLs
+                # Use pre-fetched URLs to avoid re-extracting the entire channel
                 urls_list = [it['url'] for it in ch_items if it.get('url')]
 
                 with st.spinner(f'Downloading {total_ch} videos...'):
                     try:
-                        # We reuse download_playlist's internal logic by building the playlist URL
                         results = download_playlist(
                             url_ch, ch_folder,
+                            preset_urls=urls_list,
                             audio_only=g_audio_only, convert_mp3=g_convert_mp3,
                             concurrency=g_concurrency,
                             max_items=max_ch if max_ch > 0 else None,
@@ -456,7 +456,7 @@ with tab_batch:
                 items = queue.add_batch(
                     urls=urls_list, output_folder=output_folder,
                     audio_only=g_audio_only, convert_mp3=g_convert_mp3,
-                    subtitles=g_subtitles, subtitle_lang=g_sub_lang.split(',')[0].strip(),
+                    subtitles=g_subtitles, subtitle_lang=g_sub_lang,
                     rate_limit=g_rate_limit,
                 )
                 st.success(f'✅ Added {len(items)} items to queue!')
@@ -586,7 +586,7 @@ with tab_schedule:
             item = queue.add(
                 url=url_sched, output_folder=output_folder,
                 audio_only=g_audio_only, convert_mp3=g_convert_mp3,
-                subtitles=g_subtitles, subtitle_lang=g_sub_lang.split(',')[0].strip(),
+                subtitles=g_subtitles, subtitle_lang=g_sub_lang,
                 rate_limit=g_rate_limit,
                 scheduled_time=sched_ts,
             )

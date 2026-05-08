@@ -235,14 +235,12 @@ class DownloadQueue:
 
             if not self._download_fn:
                 logger.warning('No download function registered')
+                with self._lock:
+                    item.status = QueueItemStatus.PENDING
+                    item.started_at = 0.0
+                    self._save()
                 self._stop_event.wait(5)
                 continue
-
-            # Mark as downloading
-            with self._lock:
-                item.status = QueueItemStatus.DOWNLOADING
-                item.started_at = time.time()
-                self._save()
 
             try:
                 def _progress(pct: int):
@@ -267,18 +265,24 @@ class DownloadQueue:
                     self._save()
 
     def _pick_next(self) -> Optional[QueueItem]:
-        """Pick the next item to download."""
+        """Pick the next item to download, atomically marking it as DOWNLOADING."""
         now = time.time()
         with self._lock:
-            if self.active_count() >= self._max_concurrent:
+            # Inline active count to avoid re-acquiring the non-reentrant lock
+            active = sum(1 for v in self._items.values() if v.status == QueueItemStatus.DOWNLOADING)
+            if active >= self._max_concurrent:
                 return None
             for item_id in self._order:
                 item = self._items.get(item_id)
                 if item is None:
                     continue
-                if item.status == QueueItemStatus.PENDING:
-                    return item
-                if item.status == QueueItemStatus.SCHEDULED and item.scheduled_time <= now:
-                    item.status = QueueItemStatus.PENDING
+                if item.status == QueueItemStatus.PENDING or (
+                    item.status == QueueItemStatus.SCHEDULED and item.scheduled_time <= now
+                ):
+                    # Mark DOWNLOADING atomically inside the lock to prevent two workers
+                    # from picking the same item in concurrent calls.
+                    item.status = QueueItemStatus.DOWNLOADING
+                    item.started_at = time.time()
+                    self._save()
                     return item
         return None
