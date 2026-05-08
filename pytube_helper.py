@@ -694,7 +694,7 @@ def extract_playlist_urls_with_titles(playlist_url: str) -> Dict[str, Any]:
     if YTDLP_AVAILABLE:
         try:
             results = []
-            ydl_opts = {'quiet': True, 'extract_flat': True, 'no_warnings': True}
+            ydl_opts = {'quiet': True, 'extract_flat': True, 'no_warnings': True, 'ignoreerrors': True}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(playlist_url, download=False)
                 playlist_title = info.get('title') or 'Playlist'
@@ -796,7 +796,7 @@ def _extract_playlist_urls_with_ytdlp(playlist_url: str) -> List[str]:
     # some playlist pages require full extraction — retry with
     # `extract_flat=False` to obtain concrete entries.
     video_urls = []
-    ydl_opts = {'quiet': True, 'extract_flat': True}
+    ydl_opts = {'quiet': True, 'extract_flat': True, 'ignoreerrors': True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
         entries = info.get('entries') or []
@@ -808,7 +808,7 @@ def _extract_playlist_urls_with_ytdlp(playlist_url: str) -> List[str]:
 
     if not video_urls:
         # Fall back to full extraction (may be slower) to collect entries.
-        ydl_opts = {'quiet': True, 'extract_flat': False}
+        ydl_opts = {'quiet': True, 'extract_flat': False, 'ignoreerrors': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(playlist_url, download=False)
             entries = info.get('entries') or []
