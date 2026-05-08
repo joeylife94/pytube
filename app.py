@@ -61,9 +61,15 @@ with st.sidebar:
     st.header('⚙️ Environment')
     c1, c2 = st.columns(2)
     with c1:
-        st.success('✅ yt-dlp') if YTDLP_AVAILABLE else st.error('❌ yt-dlp')
+        if YTDLP_AVAILABLE:
+            st.success('✅ yt-dlp')
+        else:
+            st.error('❌ yt-dlp')
     with c2:
-        st.success('✅ ffmpeg') if is_ffmpeg_available() else st.warning('⚠️ ffmpeg')
+        if is_ffmpeg_available():
+            st.success('✅ ffmpeg')
+        else:
+            st.warning('⚠️ ffmpeg')
     st.caption('✅ pydub' if PYDUB_AVAILABLE else '⚠️ pydub missing')
 
     st.divider()
