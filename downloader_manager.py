@@ -71,16 +71,19 @@ class YoutubeDownloader:
     Supports both pytube and yt-dlp backends with automatic engine selection.
     """
     
-    def __init__(self, output_dir: str = "downloads", preferred_engine: str = "pytube"):
+    def __init__(self, output_dir: str = "downloads", preferred_engine: str = "pytube",
+                 cookies_from_browser: Optional[str] = None):
         """
         Initialize the downloader.
         
         Args:
             output_dir: Directory where files will be saved
             preferred_engine: Preferred download engine ("pytube" or "yt-dlp")
+            cookies_from_browser: Browser name to extract cookies from (e.g. 'chrome', 'firefox')
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.cookies_from_browser = cookies_from_browser
         
         # Validate and set preferred engine
         try:
@@ -188,6 +191,10 @@ class YoutubeDownloader:
             'no_check_certificate': True,
             'age_limit': None,
         }
+
+        # Browser cookie extraction (bypasses 403 bot-detection)
+        if self.cookies_from_browser:
+            base_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
         
         if mode == DownloadMode.VIDEO:
             # Download best video+audio or best single file

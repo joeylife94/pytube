@@ -28,6 +28,12 @@ try:
 except ImportError:
     PYDUB_AVAILABLE = False
 
+try:
+    from download_db import is_downloaded, record_download
+    DOWNLOAD_DB_AVAILABLE = True
+except ImportError:
+    DOWNLOAD_DB_AVAILABLE = False
+
 
 def is_ffmpeg_available() -> bool:
     """Check whether ffmpeg is on PATH (used by pydub)."""
@@ -72,6 +78,45 @@ def _normalize_video_url(url: str) -> str:
         # if anything goes wrong, just return original URL
         return url
     return url
+
+
+def get_video_info(url: str) -> Dict[str, Any]:
+    """Fetch lightweight metadata for a video without downloading it.
+
+    Returns a dict with: title, thumbnail, duration, duration_str,
+    channel, upload_date, filesize_approx.
+    Falls back gracefully if yt-dlp is unavailable.
+    """
+    if not YTDLP_AVAILABLE:
+        return {}
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extract_flat': False,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        def _fmt_duration(sec):
+            if not sec:
+                return '?'
+            sec = int(sec)
+            h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+            return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+
+        return {
+            'title': info.get('title', ''),
+            'thumbnail': info.get('thumbnail', ''),
+            'duration': info.get('duration'),
+            'duration_str': _fmt_duration(info.get('duration')),
+            'channel': info.get('uploader') or info.get('channel', ''),
+            'upload_date': info.get('upload_date', ''),
+            'filesize_approx': info.get('filesize_approx') or info.get('filesize'),
+        }
+    except Exception:
+        return {}
 
 
 def _get_video_streams_with_ytdlp(url: str, original_error: Exception) -> Dict[str, Any]:
@@ -266,7 +311,12 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
                         progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
                         progress_file: Optional[str] = None,
                         subtitle_langs: Optional[List[str]] = None,
-                        rate_limit_kbps: int = 0) -> str:
+                        rate_limit_kbps: int = 0,
+                        cookies_from_browser: Optional[str] = None,
+                        resolution: Optional[str] = None,
+                        filename_template: Optional[str] = None,
+                        proxy: Optional[str] = None,
+                        cookiefile: Optional[str] = None) -> str:
     """Download using yt-dlp programmatic API.
 
     Args:
@@ -278,6 +328,7 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
         progress_file: Optional path to write progress updates
         subtitle_langs: Optional list of subtitle language codes (e.g. ['en', 'ko'])
         rate_limit_kbps: Download speed limit in KB/s (0 = unlimited)
+        cookies_from_browser: Browser name to extract cookies from (e.g. 'chrome', 'firefox')
         
     Returns:
         Path to the downloaded file
@@ -289,8 +340,9 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
         raise RuntimeError('yt-dlp is not available')
 
     # sensible defaults (mimic options used in downloader_manager._build_ytdlp_opts)
+    _tmpl = filename_template if filename_template else '%(title)s'
     ydl_opts = {
-        'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(output_path, f'{_tmpl}.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'http_headers': {
@@ -332,6 +384,15 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
             }]
         else:
             ydl_opts['postprocessors'] = []
+    elif resolution and resolution != 'best':
+        # e.g. resolution='1080p' -> '1080', '720p' -> '720'
+        res_num = resolution.replace('p', '').replace('k', '000').replace('K', '000')
+        ydl_opts['format'] = (
+            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
+            f'/bestvideo[height<={res_num}]+bestaudio'
+            f'/best[height<={res_num}]/best'
+        )
+        ydl_opts['merge_output_format'] = 'mp4'
     
     # Subtitles
     if subtitle_langs:
@@ -343,6 +404,18 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
     # Speed limit
     if rate_limit_kbps and rate_limit_kbps > 0:
         ydl_opts['ratelimit'] = rate_limit_kbps * 1024  # convert KB/s to B/s
+
+    # Browser cookie extraction (bypasses 403 bot-detection)
+    if cookies_from_browser:
+        ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
+
+    # Cookie file (cookies.txt from browser export or yt-dlp --cookies)
+    if cookiefile and os.path.isfile(cookiefile):
+        ydl_opts['cookiefile'] = cookiefile
+
+    # Proxy (e.g. 'socks5://127.0.0.1:1080' or 'http://user:pass@host:port')
+    if proxy:
+        ydl_opts['proxy'] = proxy
 
     ydl_opts['progress_hooks'] = [_create_ytdlp_progress_hook(progress_callback, progress_file)]
 
@@ -509,7 +582,12 @@ def download_playlist(playlist_url: str, output_path: str,
                       backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
                       subtitle_langs: Optional[List[str]] = None,
                       rate_limit_kbps: int = 0,
-                      preset_urls: Optional[List[str]] = None) -> List[str]:
+                      preset_urls: Optional[List[str]] = None,
+                      cookies_from_browser: Optional[str] = None,
+                      skip_duplicates: bool = False,
+                      filename_template: Optional[str] = None,
+                      proxy: Optional[str] = None,
+                      cookiefile: Optional[str] = None) -> List[str]:
     """Download all videos in a playlist, optionally in parallel.
 
     Args:
@@ -567,6 +645,13 @@ def download_playlist(playlist_url: str, output_path: str,
 
     def _download_one_item(video_url, index):
         """Download a single playlist item. Always uses yt-dlp when available."""
+        # Skip if already downloaded
+        if skip_duplicates and DOWNLOAD_DB_AVAILABLE:
+            rec = is_downloaded(video_url, output_path)
+            if rec:
+                _notify(rec.get('title', video_url), f'skipped (already downloaded) ({index+1}/{total_items})', video_url, index)
+                return rec.get('filepath', video_url), rec.get('title', video_url), 'ok'
+
         attempts = 0
         while attempts <= max_retries:
             try:
@@ -579,6 +664,11 @@ def download_playlist(playlist_url: str, output_path: str,
                         convert_mp3=convert_mp3,
                         subtitle_langs=subtitle_langs,
                         rate_limit_kbps=rate_limit_kbps,
+                        cookies_from_browser=cookies_from_browser,
+                        resolution=resolution_preference,
+                        filename_template=filename_template,
+                        proxy=proxy,
+                        cookiefile=cookiefile,
                     )
                 else:
                     # Fallback to pytube for environments without yt-dlp
@@ -608,6 +698,11 @@ def download_playlist(playlist_url: str, output_path: str,
                                              filename=_safe_filename(streams.get('title', 'video')))
 
                 _notify(out or video_url, f'completed ({index+1}/{total_items})', video_url, index)
+                if out and DOWNLOAD_DB_AVAILABLE:
+                    try:
+                        record_download(video_url, output_path, out)
+                    except Exception:
+                        pass
                 return out, video_url, 'ok'
 
             except Exception as e:

@@ -10,6 +10,7 @@ from pytube_helper import (
     PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback,
     download_with_ytdlp, extract_playlist_urls, extract_playlist_urls_with_titles,
     cleanup_part_files, YTDLP_AVAILABLE, extract_channel_videos,
+    get_video_info,
 )
 from download_db import is_downloaded, record_download, get_history, clear_history
 from download_queue import DownloadQueue, QueueItemStatus
@@ -87,23 +88,80 @@ with st.sidebar:
     g_subtitles = st.checkbox('📝 Download subtitles', value=False, key='g_subs')
     g_sub_lang = st.text_input('Subtitle languages', value='en,ko', key='g_sublang',
                                help='Comma-separated: en,ko,ja')
+    _res_options = ['best', '2160p (4K)', '1440p', '1080p', '720p', '480p', '360p']
+    g_resolution_label = st.selectbox('🎞 해상도', _res_options, index=0, key='g_res')
+    g_resolution = None if g_resolution_label == 'best' else g_resolution_label.split()[0]
     g_rate_limit = st.number_input('⏱ Speed limit (KB/s, 0=∞)', min_value=0, max_value=100000,
                                    value=0, key='g_rate')
     g_skip_dup = st.checkbox('🚫 Skip duplicates', value=True, key='g_dup')
     g_concurrency = st.number_input('Concurrency', min_value=1, max_value=8, value=3, key='g_conc')
+    g_use_cookies = st.checkbox('🍪 Chrome 쿠키 사용 (403 우회)', value=False, key='g_cookies',
+                                help='Chrome에 YouTube 로그인되어 있어야 합니다.')
+    g_cookies_browser = 'chrome' if g_use_cookies else None
+
+    # 쿠키 파일 업로드 (cookies.txt)
+    g_cookie_file_upload = st.file_uploader('🍪 쿠키 파일 업로드 (cookies.txt)',
+                                            type=['txt'], key='g_cookiefile',
+                                            help='yt-dlp --cookies 또는 브라우저 확장으로 내보낸 Netscape 형식')
+    if g_cookie_file_upload is not None:
+        _cookie_save_path = os.path.join(output_folder, '.uploaded_cookies.txt')
+        with open(_cookie_save_path, 'wb') as _cf:
+            _cf.write(g_cookie_file_upload.read())
+        st.session_state['g_cookiefile_path'] = _cookie_save_path
+        st.caption(f'✅ 쿠키 파일 저장됨')
+    g_cookiefile = st.session_state.get('g_cookiefile_path')
+    if g_cookiefile and os.path.isfile(g_cookiefile) and g_cookie_file_upload is None:
+        st.caption(f'📄 쿠키 파일 유지 중: `{os.path.basename(g_cookiefile)}`')
+
+    # 프록시 설정
+    g_proxy_raw = st.text_input('🌐 프록시 (비워두면 미사용)', value='', key='g_proxy',
+                                placeholder='http://user:pass@host:port  또는  socks5://127.0.0.1:1080',
+                                help='지역 제한 영상 우회. HTTP/HTTPS/SOCKS4/SOCKS5 지원')
+    g_proxy = g_proxy_raw.strip() or None
 
     st.divider()
-    if st.button('🧹 Clean .part files'):
-        n = cleanup_part_files(output_folder)
-        st.success(f'Removed {n}') if n else st.info('None found')
+    _tmpl_presets = {
+        '제목만 (기본)': '%(title)s',
+        '날짜_제목': '%(upload_date)s_%(title)s',
+        '채널_제목': '%(uploader)s_%(title)s',
+        '재생목록순서_제목': '%(playlist_index)02d_%(title)s',
+        '직접 입력': '__custom__',
+    }
+    _tmpl_label = st.selectbox('📝 파일명 템플릿', list(_tmpl_presets.keys()), key='g_tmpl_preset')
+    if _tmpl_presets[_tmpl_label] == '__custom__':
+        g_filename_template = st.text_input('커스텀 템플릿', value='%(title)s', key='g_tmpl_custom',
+                                            help='yt-dlp 필드 사용 가능: %(title)s, %(uploader)s, %(upload_date)s, %(id)s ...')
+    else:
+        g_filename_template = _tmpl_presets[_tmpl_label]
+        st.caption(f'`{g_filename_template}`')
+
+    st.divider()
+    col_clean, col_open = st.columns(2)
+    with col_clean:
+        if st.button('🧹 .part 정리'):
+            n = cleanup_part_files(output_folder)
+            st.success(f'Removed {n}') if n else st.info('None found')
+    with col_open:
+        if st.button('📂 폴더 열기'):
+            import subprocess
+            subprocess.Popen(f'explorer "{os.path.abspath(output_folder)}"')
 
     st.divider()
     st.header('📜 History')
     hist = get_history(output_folder, limit=10)
     if hist:
         for h in hist:
-            icon = '✅' if h.get('filepath') else '📥'
-            st.caption(f"{icon} {h.get('title', '?')[:40]}")
+            filepath = h.get('filepath', '')
+            col_h, col_btn = st.columns([5, 1])
+            with col_h:
+                icon = '✅' if filepath and os.path.isfile(filepath) else '📥'
+                st.caption(f"{icon} {h.get('title', '?')[:35]}")
+            with col_btn:
+                if filepath and os.path.isfile(filepath):
+                    if st.button('📂', key=f"hist_{h.get('url','')[-8:]}_{h.get('title','')[:5]}",
+                                 help='파일 열기'):
+                        import subprocess
+                        subprocess.Popen(f'explorer /select,"{os.path.abspath(filepath)}"')
         if st.button('Clear all history'):
             clear_history(output_folder)
             st.rerun()
@@ -178,9 +236,54 @@ tab_single, tab_playlist, tab_channel, tab_batch, tab_queue, tab_schedule, tab_a
 
 with tab_single:
     st.subheader('🎬 Single Video Download')
+    # 클립보드에서 YouTube URL 자동 감지
+    st.components.v1.html("""
+    <script>
+    async function checkClipboard() {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text && (text.includes('youtube.com/watch') || text.includes('youtu.be/'))) {
+                const inputs = window.parent.document.querySelectorAll('input[data-testid]');
+                inputs.forEach(inp => {
+                    if (inp.value === '' && inp.placeholder && inp.placeholder.includes('youtube.com')) {
+                        inp.value = text;
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                });
+            }
+        } catch(e) {}
+    }
+    checkClipboard();
+    </script>
+    """, height=0)
     url_single = st.text_input('YouTube URL', placeholder='https://www.youtube.com/watch?v=...', key='url_single')
 
     if url_single:
+        # 썸네일 + 메타데이터 자동 미리보기
+        prev_key = 's_preview'
+        if st.session_state.get(prev_key + '_url') != url_single:
+            with st.spinner('🔍 미리보기 로딩...'):
+                preview = get_video_info(url_single)
+            st.session_state[prev_key] = preview
+            st.session_state[prev_key + '_url'] = url_single
+        else:
+            preview = st.session_state.get(prev_key, {})
+
+        if preview:
+            col_thumb, col_meta = st.columns([2, 3])
+            with col_thumb:
+                if preview.get('thumbnail'):
+                    st.image(preview['thumbnail'], use_container_width=True)
+            with col_meta:
+                st.markdown(f"**{preview.get('title', '?')}**")
+                st.caption(f"📺 {preview.get('channel', '?')}")
+                st.caption(f"⏱ {preview.get('duration_str', '?')}")
+                if preview.get('upload_date'):
+                    d = preview['upload_date']
+                    st.caption(f"📅 {d[:4]}-{d[4:6]}-{d[6:8]}")
+                if preview.get('filesize_approx'):
+                    st.caption(f"💾 ~{human_size(preview['filesize_approx'])}")
+            st.divider()
         # Duplicate check
         if g_skip_dup:
             dup = is_downloaded(url_single, output_folder)
@@ -224,10 +327,35 @@ with tab_single:
                                 progress_callback=_ytdlp_progress,
                                 subtitle_langs=_get_sub_langs(),
                                 rate_limit_kbps=g_rate_limit,
+                                cookies_from_browser=g_cookies_browser,
+                                resolution=g_resolution,
+                                filename_template=g_filename_template,
+                                proxy=g_proxy,
+                                cookiefile=g_cookiefile,
                             )
                             progress_bar.progress(100)
                             status_text.text('✅ Complete')
                             st.success(f'Downloaded: `{fname}`')
+                            # 완료 알림
+                            _done_title = preview.get('title', fname) if preview else fname
+                            st.toast(f'✅ 다운로드 완료: {_done_title[:50]}', icon='🎬')
+                            st.components.v1.html(f"""
+                            <script>
+                            (function(){{
+                                const msg = {repr(_done_title[:80])};
+                                if (Notification && Notification.permission === 'granted') {{
+                                    new Notification('✅ 다운로드 완료', {{ body: msg }});
+                                }} else if (Notification && Notification.permission !== 'denied') {{
+                                    Notification.requestPermission().then(p => {{
+                                        if (p === 'granted') new Notification('✅ 다운로드 완료', {{ body: msg }});
+                                    }});
+                                }}
+                            }})();
+                            </script>
+                            """, height=0)
+                            if st.button('📂 파일 열기', key='open_single'):
+                                import subprocess
+                                subprocess.Popen(f'explorer /select,"{os.path.abspath(fname)}"')
                             record_download(url_single, output_folder, fname, title=title,
                                             size=os.path.getsize(fname) if os.path.isfile(fname) else 0)
                         except Exception as e:
@@ -308,6 +436,12 @@ with tab_playlist:
                             per_item_callback=_pl_cb, prefer_ytdlp=True,
                             subtitle_langs=_get_sub_langs(),
                             rate_limit_kbps=g_rate_limit,
+                            cookies_from_browser=g_cookies_browser,
+                            skip_duplicates=g_skip_dup,
+                            resolution_preference=g_resolution,
+                            filename_template=g_filename_template,
+                            proxy=g_proxy,
+                            cookiefile=g_cookiefile,
                         )
                     except Exception as e:
                         st.error(f'❌ {e}')
@@ -315,8 +449,35 @@ with tab_playlist:
 
                 progress_bar.progress(100)
                 st.success(f'🎉 Done! {len(results)}/{effective} downloaded to `{pl_folder}`')
+                st.toast(f'🎉 플레이리스트 완료: {len(results)}/{effective}개', icon='✅')
                 if done['err'] > 0:
                     st.warning(f'⚠️ {done["err"]} failed')
+                    # 실패 URL 추출해서 재시도 버튼 제공
+                    failed_urls = [entry.split('❌ ')[-1].split(':')[0].strip() for entry in log if entry.startswith('❌')]
+                    failed_urls_valid = [u for u in failed_urls if 'youtube' in u or 'youtu.be' in u]
+                    if failed_urls_valid:
+                        st.session_state['pl_failed_urls'] = failed_urls_valid
+                if st.session_state.get('pl_failed_urls'):
+                    failed_list = st.session_state['pl_failed_urls']
+                    if st.button(f'🔁 실패한 {len(failed_list)}개 재시도', key='pl_retry'):
+                        st.session_state['pl_failed_urls'] = None
+                        retry_done = {'ok': 0, 'err': 0}
+                        retry_log = []
+                        for ru in failed_list:
+                            try:
+                                download_with_ytdlp(ru, pl_folder, audio_only=g_audio_only,
+                                                    convert_mp3=g_convert_mp3, subtitle_langs=_get_sub_langs(),
+                                                    rate_limit_kbps=g_rate_limit, cookies_from_browser=g_cookies_browser,
+                                                    resolution=g_resolution, proxy=g_proxy, cookiefile=g_cookiefile)
+                                retry_done['ok'] += 1
+                                retry_log.append(f'✅ {ru[:60]}')
+                            except Exception as re:
+                                retry_done['err'] += 1
+                                retry_log.append(f'❌ {ru[:60]}: {re}')
+                        st.success(f'재시도 완료: ✅{retry_done["ok"]} ❌{retry_done["err"]}')
+                        with st.expander('재시도 로그'):
+                            for e in retry_log:
+                                st.caption(e)
                 with st.expander('📋 Log', expanded=True):
                     for entry in log:
                         st.caption(entry)
@@ -400,6 +561,12 @@ with tab_channel:
                             per_item_callback=_ch_cb, prefer_ytdlp=True,
                             subtitle_langs=_get_sub_langs(),
                             rate_limit_kbps=g_rate_limit,
+                            cookies_from_browser=g_cookies_browser,
+                            skip_duplicates=g_skip_dup,
+                            resolution_preference=g_resolution,
+                            filename_template=g_filename_template,
+                            proxy=g_proxy,
+                            cookiefile=g_cookiefile,
                         )
                     except Exception as e:
                         st.error(f'❌ {e}')
@@ -407,6 +574,26 @@ with tab_channel:
 
                 progress_bar.progress(100)
                 st.success(f'🎉 Done! {len(results)}/{total_ch} downloaded')
+                st.toast(f'🎉 채널 다운로드 완료: {len(results)}/{total_ch}개', icon='✅')
+                if done['err'] > 0:
+                    st.warning(f'⚠️ {done["err"]} failed')
+                    failed_ch_urls = [entry.split('❌ ')[-1].strip() for entry in log if entry.startswith('❌')]
+                    failed_ch_valid = [u for u in failed_ch_urls if 'youtube' in u or 'youtu.be' in u]
+                    if failed_ch_valid:
+                        st.session_state['ch_failed_urls'] = failed_ch_valid
+                if st.session_state.get('ch_failed_urls'):
+                    failed_ch_list = st.session_state['ch_failed_urls']
+                    if st.button(f'🔁 실패한 {len(failed_ch_list)}개 재시도', key='ch_retry'):
+                        st.session_state['ch_failed_urls'] = None
+                        for ru in failed_ch_list:
+                            try:
+                                download_with_ytdlp(ru, ch_folder, audio_only=g_audio_only,
+                                                    convert_mp3=g_convert_mp3, subtitle_langs=_get_sub_langs(),
+                                                    rate_limit_kbps=g_rate_limit, cookies_from_browser=g_cookies_browser,
+                                                    resolution=g_resolution, proxy=g_proxy, cookiefile=g_cookiefile)
+                            except Exception:
+                                pass
+                        st.success('재시도 완료!')
                 with st.expander('📋 Log', expanded=True):
                     for entry in log:
                         st.caption(entry)
@@ -482,6 +669,11 @@ with tab_batch:
                             audio_only=g_audio_only, convert_mp3=g_convert_mp3,
                             subtitle_langs=_get_sub_langs(),
                             rate_limit_kbps=g_rate_limit,
+                            cookies_from_browser=g_cookies_browser,
+                            resolution=g_resolution,
+                            filename_template=g_filename_template,
+                            proxy=g_proxy,
+                            cookiefile=g_cookiefile,
                         )
                         done_count['ok'] += 1
                         log.append(f'✅ {url_b[:50]}')
@@ -567,7 +759,20 @@ with tab_queue:
 
 with tab_schedule:
     st.subheader('⏰ Scheduled Downloads')
-    st.caption('Schedule downloads for a specific date and time.')
+    st.caption('지정한 시각에 자동으로 다운로드를 시작합니다. 앱이 실행 중이어야 동작합니다.')
+
+    # 현재 사이드바 설정 안내
+    _sched_hints = []
+    if g_proxy:
+        _sched_hints.append(f'🌐 프록시: `{g_proxy}`')
+    if g_cookiefile and os.path.isfile(g_cookiefile):
+        _sched_hints.append(f'🍪 쿠키 파일: `{os.path.basename(g_cookiefile)}`')
+    if g_resolution:
+        _sched_hints.append(f'🎞 해상도: `{g_resolution}`')
+    if g_audio_only:
+        _sched_hints.append('🎵 Audio only')
+    if _sched_hints:
+        st.info('현재 사이드바 설정 적용됨: ' + ' · '.join(_sched_hints))
 
     url_sched = st.text_input('YouTube URL', key='sched_url',
                               placeholder='https://www.youtube.com/watch?v=...')
@@ -576,17 +781,19 @@ with tab_schedule:
     with sc1:
         sched_date = st.date_input('Date', key='sched_date')
     with sc2:
-        sched_time = st.time_input('Time', key='sched_time', value=datetime.time(23, 0))
+        sched_time_val = st.time_input('Time', key='sched_time', value=datetime.time(23, 0))
 
     if url_sched:
-        sched_dt = datetime.datetime.combine(sched_date, sched_time)
+        sched_dt = datetime.datetime.combine(sched_date, sched_time_val)
         sched_ts = sched_dt.timestamp()
         now_ts = time.time()
 
         if sched_ts <= now_ts:
-            st.warning('⚠️ Scheduled time is in the past. It will start immediately.')
-
-        st.info(f'📅 Scheduled for: **{sched_dt.strftime("%Y-%m-%d %H:%M")}**')
+            st.warning('⚠️ 설정한 시각이 이미 지났습니다. 즉시 시작됩니다.')
+        else:
+            remaining = int(sched_ts - now_ts)
+            h, m = remaining // 3600, (remaining % 3600) // 60
+            st.info(f'📅 예약 시각: **{sched_dt.strftime("%Y-%m-%d %H:%M")}** (약 {h}시간 {m}분 후)')
 
         if st.button('⏰ Schedule download', key='sched_go', type='primary'):
             item = queue.add(
@@ -596,19 +803,27 @@ with tab_schedule:
                 rate_limit=g_rate_limit,
                 scheduled_time=sched_ts,
             )
-            st.success(f'✅ Scheduled! ID: {item.id} — will start at {sched_dt.strftime("%Y-%m-%d %H:%M")}')
-            st.info('Go to the **Queue** tab to see scheduled items.')
+            st.success(f'✅ 예약 완료! ID: `{item.id}` — {sched_dt.strftime("%Y-%m-%d %H:%M")} 시작 예정')
+            st.info('**Queue** 탭에서 예약 항목을 확인할 수 있습니다.')
 
     # Show existing scheduled items
     st.divider()
     scheduled = [i for i in queue.get_all() if i.status == QueueItemStatus.SCHEDULED]
     if scheduled:
-        st.markdown(f'**{len(scheduled)} scheduled item(s):**')
+        st.markdown(f'**{len(scheduled)}개 예약됨:**')
         for item in scheduled:
-            sched = datetime.datetime.fromtimestamp(item.scheduled_time)
-            st.caption(f'⏰ {sched.strftime("%Y-%m-%d %H:%M")} — {item.url[:60]}')
+            sched_t = datetime.datetime.fromtimestamp(item.scheduled_time)
+            remaining_s = int(item.scheduled_time - time.time())
+            remain_str = f'{remaining_s//3600}h {(remaining_s%3600)//60}m 후' if remaining_s > 0 else '곧 시작'
+            col_s, col_cancel = st.columns([5, 1])
+            with col_s:
+                st.caption(f'⏰ {sched_t.strftime("%Y-%m-%d %H:%M")} ({remain_str}) — {item.url[:55]}')
+            with col_cancel:
+                if st.button('✖', key=f'sched_cancel_{item.id}', help='예약 취소'):
+                    queue.cancel(item.id)
+                    st.rerun()
     else:
-        st.caption('No scheduled downloads.')
+        st.caption('예약된 다운로드가 없습니다.')
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 7: API
