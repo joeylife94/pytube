@@ -410,8 +410,21 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
         ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
 
     # Cookie file (cookies.txt from browser export or yt-dlp --cookies)
+    # Auto-detect cookies file in workspace root if not explicitly given
     if cookiefile and os.path.isfile(cookiefile):
         ydl_opts['cookiefile'] = cookiefile
+    elif not cookiefile:
+        _base_dir = os.path.dirname(os.path.abspath(__file__))
+        for _candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
+            _path = os.path.join(_base_dir, _candidate)
+            if os.path.isfile(_path):
+                ydl_opts['cookiefile'] = _path
+                break
+
+    # JS runtime (node) + EJS remote solver for n-challenge / SABR-protected videos
+    if shutil.which('node'):
+        ydl_opts['js_runtimes'] = {'node': {}}
+        ydl_opts['remote_components'] = ['ejs:github']
 
     # Proxy (e.g. 'socks5://127.0.0.1:1080' or 'http://user:pass@host:port')
     if proxy:

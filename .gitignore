@@ -75,6 +75,11 @@ tmp/
 .env
 .env.*
 
+# YouTube cookies (contain auth credentials, never commit)
+cookies.txt
+*_cookies.txt
+www.youtube.com_cookies.txt
+
 # other
 *.sqlite3
 *.db
