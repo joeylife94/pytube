@@ -150,7 +150,7 @@ with st.sidebar:
     st.header('📜 History')
     hist = get_history(output_folder, limit=10)
     if hist:
-        for h in hist:
+        for hi, h in enumerate(hist):
             filepath = h.get('filepath', '')
             col_h, col_btn = st.columns([5, 1])
             with col_h:
@@ -158,7 +158,7 @@ with st.sidebar:
                 st.caption(f"{icon} {h.get('title', '?')[:35]}")
             with col_btn:
                 if filepath and os.path.isfile(filepath):
-                    if st.button('📂', key=f"hist_{h.get('url','')[-8:]}_{h.get('title','')[:5]}",
+                    if st.button('📂', key=f"hist_{hi}_{h.get('url','')[-8:]}",
                                  help='파일 열기'):
                         import subprocess
                         subprocess.Popen(f'explorer /select,"{os.path.abspath(filepath)}"')
