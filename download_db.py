@@ -20,9 +20,14 @@ def _db_path(output_folder: str) -> str:
     return str(d / '.download_history.json')
 
 
-def _url_key(url: str) -> str:
-    """Normalise a URL into a short hash key."""
-    return hashlib.sha256(url.strip().encode()).hexdigest()[:16]
+def _url_key(url: str, mode: str = '') -> str:
+    """Normalise a URL + download mode into a short hash key.
+
+    mode: 'audio' for audio-only / MP3 downloads, 'video' (or '') for video.
+    Including mode allows the same URL to be downloaded as both video and audio.
+    """
+    key = url.strip() + ('|' + mode if mode else '')
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def _load(db_file: str) -> Dict[str, Any]:
@@ -42,14 +47,15 @@ def _save(db_file: str, data: Dict[str, Any]) -> None:
 
 # ─── Public API ──────────────────────────────────────────────────────────────
 
-def is_downloaded(url: str, output_folder: str) -> Optional[Dict[str, Any]]:
+def is_downloaded(url: str, output_folder: str, mode: str = '') -> Optional[Dict[str, Any]]:
     """Check if a URL has already been downloaded.
 
-    Returns the record dict if found, otherwise None.
+    mode: 'audio' for audio-only / MP3 downloads, 'video' (or '') for video.
+    Returns the record dict if found (and the file still exists), otherwise None.
     """
     with _lock:
         db = _load(_db_path(output_folder))
-        rec = db.get(_url_key(url))
+        rec = db.get(_url_key(url, mode))
         if rec is None:
             return None
         # Also verify the file still exists on disk
@@ -61,12 +67,16 @@ def is_downloaded(url: str, output_folder: str) -> Optional[Dict[str, Any]]:
 
 def record_download(url: str, output_folder: str, filepath: str,
                     title: str = '', size: int = 0,
+                    mode: str = '',
                     extra: Optional[Dict] = None) -> None:
-    """Record a successful download."""
+    """Record a successful download.
+
+    mode: 'audio' for audio-only / MP3 downloads, 'video' (or '') for video.
+    """
     with _lock:
         db_file = _db_path(output_folder)
         db = _load(db_file)
-        db[_url_key(url)] = {
+        db[_url_key(url, mode)] = {
             'url': url,
             'title': title,
             'filepath': filepath,

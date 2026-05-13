@@ -99,7 +99,8 @@ def _do_download(item: QueueItem, progress_cb):
             filepath = ydl.prepare_filename(info)
 
     record_download(item.url, item.output_folder, filepath,
-                    title=info.get('title', ''), size=os.path.getsize(filepath) if os.path.isfile(filepath) else 0)
+                    title=info.get('title', ''), size=os.path.getsize(filepath) if os.path.isfile(filepath) else 0,
+                    mode='audio' if (item.audio_only or item.convert_mp3) else 'video')
     return filepath
 
 _queue.set_download_function(_do_download)
@@ -187,7 +188,7 @@ def start_download(req: DownloadRequest):
     os.makedirs(out, exist_ok=True)
 
     if req.skip_duplicates:
-        dup = is_downloaded(req.url, out)
+        dup = is_downloaded(req.url, out, mode='audio' if (req.audio_only or req.convert_mp3) else 'video')
         if dup:
             return QueueItemResponse(
                 id='duplicate',

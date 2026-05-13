@@ -286,7 +286,8 @@ with tab_single:
             st.divider()
         # Duplicate check
         if g_skip_dup:
-            dup = is_downloaded(url_single, output_folder)
+            _mode = 'audio' if (g_audio_only or g_convert_mp3) else 'video'
+            dup = is_downloaded(url_single, output_folder, mode=_mode)
             if dup:
                 st.warning(f'⚠️ Already downloaded: **{dup.get("title", "?")}** → `{dup.get("filepath", "?")}`')
                 st.caption('Uncheck "Skip duplicates" in sidebar to re-download.')
@@ -305,7 +306,7 @@ with tab_single:
 
             if st.button('⬇️ Download', key='dl_single', type='primary'):
                 # Check duplicate
-                if g_skip_dup and is_downloaded(url_single, output_folder):
+                if g_skip_dup and is_downloaded(url_single, output_folder, mode='audio' if (g_audio_only or g_convert_mp3) else 'video'):
                     st.warning('Already downloaded. Skipping.')
                 else:
                     progress_bar = st.progress(0)
@@ -357,7 +358,8 @@ with tab_single:
                                 import subprocess
                                 subprocess.Popen(f'explorer /select,"{os.path.abspath(fname)}"')
                             record_download(url_single, output_folder, fname, title=title,
-                                            size=os.path.getsize(fname) if os.path.isfile(fname) else 0)
+                                            size=os.path.getsize(fname) if os.path.isfile(fname) else 0,
+                                            mode='audio' if (g_audio_only or g_convert_mp3) else 'video')
                         except Exception as e:
                             st.error(f'❌ {e}')
 
@@ -633,7 +635,7 @@ with tab_batch:
             new_urls = []
             dup_count = 0
             for u in urls_list:
-                if is_downloaded(u, output_folder):
+                if is_downloaded(u, output_folder, mode='audio' if (g_audio_only or g_convert_mp3) else 'video'):
                     dup_count += 1
                 else:
                     new_urls.append(u)
@@ -677,7 +679,7 @@ with tab_batch:
                         )
                         done_count['ok'] += 1
                         log.append(f'✅ {url_b[:50]}')
-                        record_download(url_b, output_folder, fname)
+                        record_download(url_b, output_folder, fname, mode='audio' if (g_audio_only or g_convert_mp3) else 'video')
                     except Exception as e:
                         done_count['err'] += 1
                         log.append(f'❌ {url_b[:50]}: {e}')

@@ -660,7 +660,8 @@ def download_playlist(playlist_url: str, output_path: str,
         """Download a single playlist item. Always uses yt-dlp when available."""
         # Skip if already downloaded
         if skip_duplicates and DOWNLOAD_DB_AVAILABLE:
-            rec = is_downloaded(video_url, output_path)
+            _mode = 'audio' if (audio_only or convert_mp3) else 'video'
+            rec = is_downloaded(video_url, output_path, mode=_mode)
             if rec:
                 _notify(rec.get('title', video_url), f'skipped (already downloaded) ({index+1}/{total_items})', video_url, index)
                 return rec.get('filepath', video_url), rec.get('title', video_url), 'ok'
@@ -713,7 +714,8 @@ def download_playlist(playlist_url: str, output_path: str,
                 _notify(out or video_url, f'completed ({index+1}/{total_items})', video_url, index)
                 if out and DOWNLOAD_DB_AVAILABLE:
                     try:
-                        record_download(video_url, output_path, out)
+                        _mode = 'audio' if (audio_only or convert_mp3) else 'video'
+                        record_download(video_url, output_path, out, mode=_mode)
                     except Exception:
                         pass
                 return out, video_url, 'ok'
