@@ -105,12 +105,12 @@ def clear_history(output_folder: str) -> int:
         return n
 
 
-def remove_record(url: str, output_folder: str) -> bool:
+def remove_record(url: str, output_folder: str, mode: str = '') -> bool:
     """Remove a single record by URL."""
     with _lock:
         db_file = _db_path(output_folder)
         db = _load(db_file)
-        key = _url_key(url)
+        key = _url_key(url, mode)
         if key in db:
             del db[key]
             _save(db_file, db)

@@ -184,8 +184,9 @@ def _get_queue() -> DownloadQueue:
 
         def _do_download(item, progress_cb):
             import yt_dlp as _yt_dlp
+            _tmpl = item.filename_template or '%(title)s'
             ydl_opts = {
-                'outtmpl': os.path.join(item.output_folder, '%(title)s.%(ext)s'),
+                'outtmpl': os.path.join(item.output_folder, f'{_tmpl}.%(ext)s'),
                 'quiet': True, 'no_warnings': True,
                 'progress_hooks': [lambda d: progress_cb(
                     int(d.get('downloaded_bytes', 0) / max(d.get('total_bytes') or d.get('total_bytes_estimate') or 1, 1) * 100)
@@ -195,6 +196,13 @@ def _get_queue() -> DownloadQueue:
                 ydl_opts['format'] = 'bestaudio/best'
                 if item.convert_mp3:
                     ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+            elif item.resolution and item.resolution != 'best':
+                res_num = item.resolution.replace('p', '')
+                ydl_opts['format'] = (
+                    f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
+                    f'/bestvideo[height<={res_num}]+bestaudio/best[height<={res_num}]/best'
+                )
+                ydl_opts['merge_output_format'] = 'mp4'
             if item.subtitles:
                 ydl_opts['writesubtitles'] = True
                 ydl_opts['writeautomaticsub'] = True
@@ -203,6 +211,12 @@ def _get_queue() -> DownloadQueue:
                 ydl_opts['subtitlesformat'] = 'srt/best'
             if item.rate_limit > 0:
                 ydl_opts['ratelimit'] = item.rate_limit * 1024
+            if item.proxy:
+                ydl_opts['proxy'] = item.proxy
+            if item.cookiefile and os.path.isfile(item.cookiefile):
+                ydl_opts['cookiefile'] = item.cookiefile
+            if item.cookies_from_browser:
+                ydl_opts['cookiesfrombrowser'] = (item.cookies_from_browser,)
 
             os.makedirs(item.output_folder, exist_ok=True)
             with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -292,15 +306,14 @@ with tab_single:
                 st.warning(f'⚠️ Already downloaded: **{dup.get("title", "?")}** → `{dup.get("filepath", "?")}`')
                 st.caption('Uncheck "Skip duplicates" in sidebar to re-download.')
 
-        if st.button('🔍 Fetch info', key='fetch_single', type='primary') or st.session_state.get('s_fetched_url') == url_single:
-            if st.session_state.get('s_fetched_url') == url_single and st.session_state.get('s_streams'):
-                streams = st.session_state['s_streams']
-            else:
-                with st.spinner('Fetching...'):
-                    streams = get_video_streams(url_single)
-                    st.session_state['s_streams'] = streams
-                    st.session_state['s_fetched_url'] = url_single
+        if st.button('🔍 Fetch info', key='fetch_single', type='primary'):
+            with st.spinner('Fetching...'):
+                streams = get_video_streams(url_single)
+                st.session_state['s_streams'] = streams
+                st.session_state['s_fetched_url'] = url_single
 
+        if st.session_state.get('s_fetched_url') == url_single and st.session_state.get('s_streams'):
+            streams = st.session_state['s_streams']
             title = streams.get('title', 'Unknown')
             st.info(f'**{title}** (via {streams.get("backend", "?")})')
 
@@ -410,6 +423,7 @@ with tab_playlist:
                 status_text = st.empty()
                 log = []
                 done = {'ok': 0, 'err': 0}
+                failed_urls_pl = []
 
                 def _pl_cb(title, status, video_url, idx):
                     short = (title or video_url or '?')[:60]
@@ -419,6 +433,8 @@ with tab_playlist:
                     elif 'error' in str(status):
                         done['err'] += 1
                         log.append(f"❌ {short}: {status}")
+                        if video_url:
+                            failed_urls_pl.append(video_url)
                     else:
                         log.append(f"⏳ {short}")
                     total = done['ok'] + done['err']
@@ -454,11 +470,8 @@ with tab_playlist:
                 st.toast(f'🎉 플레이리스트 완료: {len(results)}/{effective}개', icon='✅')
                 if done['err'] > 0:
                     st.warning(f'⚠️ {done["err"]} failed')
-                    # 실패 URL 추출해서 재시도 버튼 제공
-                    failed_urls = [entry.split('❌ ')[-1].split(':')[0].strip() for entry in log if entry.startswith('❌')]
-                    failed_urls_valid = [u for u in failed_urls if 'youtube' in u or 'youtu.be' in u]
-                    if failed_urls_valid:
-                        st.session_state['pl_failed_urls'] = failed_urls_valid
+                    if failed_urls_pl:
+                        st.session_state['pl_failed_urls'] = failed_urls_pl
                 if st.session_state.get('pl_failed_urls'):
                     failed_list = st.session_state['pl_failed_urls']
                     if st.button(f'🔁 실패한 {len(failed_list)}개 재시도', key='pl_retry'):
@@ -533,6 +546,7 @@ with tab_channel:
                 log = []
                 done = {'ok': 0, 'err': 0}
                 total_ch = len(ch_items)
+                failed_urls_ch = []
 
                 def _ch_cb(title, status, video_url, idx):
                     short = (title or video_url or '?')[:60]
@@ -542,6 +556,8 @@ with tab_channel:
                     elif 'error' in str(status):
                         done['err'] += 1
                         log.append(f"❌ {short}")
+                        if video_url:
+                            failed_urls_ch.append(video_url)
                     processed = done['ok'] + done['err']
                     try:
                         progress_bar.progress(min(int(processed / total_ch * 100), 100))
@@ -579,10 +595,8 @@ with tab_channel:
                 st.toast(f'🎉 채널 다운로드 완료: {len(results)}/{total_ch}개', icon='✅')
                 if done['err'] > 0:
                     st.warning(f'⚠️ {done["err"]} failed')
-                    failed_ch_urls = [entry.split('❌ ')[-1].strip() for entry in log if entry.startswith('❌')]
-                    failed_ch_valid = [u for u in failed_ch_urls if 'youtube' in u or 'youtu.be' in u]
-                    if failed_ch_valid:
-                        st.session_state['ch_failed_urls'] = failed_ch_valid
+                    if failed_urls_ch:
+                        st.session_state['ch_failed_urls'] = failed_urls_ch
                 if st.session_state.get('ch_failed_urls'):
                     failed_ch_list = st.session_state['ch_failed_urls']
                     if st.button(f'🔁 실패한 {len(failed_ch_list)}개 재시도', key='ch_retry'):
@@ -653,6 +667,10 @@ with tab_batch:
                     audio_only=g_audio_only, convert_mp3=g_convert_mp3,
                     subtitles=g_subtitles, subtitle_lang=g_sub_lang,
                     rate_limit=g_rate_limit,
+                    proxy=g_proxy or '', cookiefile=g_cookiefile or '',
+                    cookies_from_browser=g_cookies_browser or '',
+                    resolution=g_resolution or '',
+                    filename_template=g_filename_template,
                 )
                 st.success(f'✅ Added {len(items)} items to queue!')
                 st.info('Go to the **Queue** tab to monitor progress.')
@@ -804,6 +822,10 @@ with tab_schedule:
                 subtitles=g_subtitles, subtitle_lang=g_sub_lang,
                 rate_limit=g_rate_limit,
                 scheduled_time=sched_ts,
+                proxy=g_proxy or '', cookiefile=g_cookiefile or '',
+                cookies_from_browser=g_cookies_browser or '',
+                resolution=g_resolution or '',
+                filename_template=g_filename_template,
             )
             st.success(f'✅ 예약 완료! ID: `{item.id}` — {sched_dt.strftime("%Y-%m-%d %H:%M")} 시작 예정')
             st.info('**Queue** 탭에서 예약 항목을 확인할 수 있습니다.')

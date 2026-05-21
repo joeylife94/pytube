@@ -42,6 +42,12 @@ class QueueItem:
     finished_at: float = 0.0
     # For scheduling
     scheduled_time: float = 0.0  # unix timestamp, 0 = immediate
+    # Per-item download options (captured from sidebar at queue time)
+    proxy: str = ''
+    cookiefile: str = ''
+    cookies_from_browser: str = ''
+    resolution: str = ''
+    filename_template: str = '%(title)s'
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -101,7 +107,10 @@ class DownloadQueue:
             audio_only: bool = False, convert_mp3: bool = False,
             subtitles: bool = False, subtitle_lang: str = 'en',
             rate_limit: int = 0,
-            scheduled_time: float = 0.0) -> QueueItem:
+            scheduled_time: float = 0.0,
+            proxy: str = '', cookiefile: str = '',
+            cookies_from_browser: str = '', resolution: str = '',
+            filename_template: str = '%(title)s') -> QueueItem:
         """Add a new item to the queue."""
         item = QueueItem(
             url=url.strip(),
@@ -114,6 +123,11 @@ class DownloadQueue:
             rate_limit=rate_limit,
             status=QueueItemStatus.SCHEDULED if scheduled_time > 0 else QueueItemStatus.PENDING,
             scheduled_time=scheduled_time,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            cookies_from_browser=cookies_from_browser,
+            resolution=resolution,
+            filename_template=filename_template,
         )
         with self._lock:
             self._items[item.id] = item
@@ -138,6 +152,11 @@ class DownloadQueue:
                     subtitles=kwargs.get('subtitles', False),
                     subtitle_lang=kwargs.get('subtitle_lang', 'en'),
                     rate_limit=kwargs.get('rate_limit', 0),
+                    proxy=kwargs.get('proxy', ''),
+                    cookiefile=kwargs.get('cookiefile', ''),
+                    cookies_from_browser=kwargs.get('cookies_from_browser', ''),
+                    resolution=kwargs.get('resolution', ''),
+                    filename_template=kwargs.get('filename_template', '%(title)s'),
                 )
                 self._items[item.id] = item
                 self._order.append(item.id)
