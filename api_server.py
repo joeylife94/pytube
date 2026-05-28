@@ -11,7 +11,7 @@ import logging
 
 from pytube_helper import (
     YTDLP_AVAILABLE, is_ffmpeg_available, PYDUB_AVAILABLE,
-    download_with_ytdlp, download_playlist, get_video_streams,
+    download_playlist, get_video_streams,
     extract_playlist_urls_with_titles, extract_channel_videos,
 )
 from download_db import is_downloaded, record_download, get_history, clear_history
@@ -42,11 +42,13 @@ def _validate_output_folder(folder: str) -> str:
     """Validate and resolve output folder, rejecting path traversal attempts."""
     if not folder:
         return DEFAULT_OUTPUT
-    # Reject any path that contains a '..' component before normalization resolves it
-    parts = folder.replace('\\', '/').split('/')
+    # Normalize syntactically first so a/b/../../.. becomes ../.. etc.
+    normalized = os.path.normpath(folder)
+    parts = normalized.replace('\\', '/').split('/')
     if '..' in parts:
         raise HTTPException(status_code=400, detail='output_folder must not contain path traversal (..)')
-    return os.path.abspath(folder)
+    # Resolve symlinks to get the true absolute path
+    return os.path.realpath(os.path.abspath(normalized))
 
 # Shared queue instance
 _queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.queue.json'))
@@ -54,7 +56,7 @@ _queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.queue.json'))
 
 def _do_download(item: QueueItem, progress_cb):
     """Execute a queue item download."""
-    from pytube_helper import download_with_ytdlp, YTDLP_AVAILABLE
+    import yt_dlp
     if not YTDLP_AVAILABLE:
         raise RuntimeError('yt-dlp not available')
 
@@ -66,9 +68,9 @@ def _do_download(item: QueueItem, progress_cb):
         if total > 0:
             progress_cb(int(downloaded / total * 100))
 
-    import yt_dlp
+    _tmpl = item.filename_template or '%(title)s'
     ydl_opts = {
-        'outtmpl': os.path.join(item.output_folder, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(item.output_folder, f'{_tmpl}.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [_hook],
@@ -81,6 +83,13 @@ def _do_download(item: QueueItem, progress_cb):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
+    elif item.resolution and item.resolution != 'best':
+        res_num = item.resolution.replace('p', '')
+        ydl_opts['format'] = (
+            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
+            f'/bestvideo[height<={res_num}]+bestaudio/best[height<={res_num}]/best'
+        )
+        ydl_opts['merge_output_format'] = 'mp4'
     if item.subtitles:
         ydl_opts['writesubtitles'] = True
         ydl_opts['writeautomaticsub'] = True
@@ -89,6 +98,12 @@ def _do_download(item: QueueItem, progress_cb):
         ydl_opts['subtitlesformat'] = 'srt/best'
     if item.rate_limit and item.rate_limit > 0:
         ydl_opts['ratelimit'] = item.rate_limit * 1024
+    if item.proxy:
+        ydl_opts['proxy'] = item.proxy
+    if item.cookiefile and os.path.isfile(item.cookiefile):
+        ydl_opts['cookiefile'] = item.cookiefile
+    if item.cookies_from_browser:
+        ydl_opts['cookiesfrombrowser'] = (item.cookies_from_browser,)
 
     os.makedirs(item.output_folder, exist_ok=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -99,7 +114,8 @@ def _do_download(item: QueueItem, progress_cb):
             filepath = ydl.prepare_filename(info)
 
     record_download(item.url, item.output_folder, filepath,
-                    title=info.get('title', ''), size=os.path.getsize(filepath) if os.path.isfile(filepath) else 0,
+                    title=info.get('title', ''),
+                    size=os.path.getsize(filepath) if os.path.isfile(filepath) else 0,
                     mode='audio' if (item.audio_only or item.convert_mp3) else 'video')
     return filepath
 
@@ -117,6 +133,10 @@ class DownloadRequest(BaseModel):
     subtitle_lang: str = 'en'
     rate_limit: int = Field(0, description='Speed limit in KB/s, 0 = unlimited')
     skip_duplicates: bool = True
+    proxy: str = ''
+    cookiefile: str = ''
+    resolution: str = ''
+    filename_template: str = '%(title)s'
 
 class BatchRequest(BaseModel):
     urls: List[str]
@@ -126,6 +146,10 @@ class BatchRequest(BaseModel):
     subtitles: bool = False
     subtitle_lang: str = 'en'
     rate_limit: int = 0
+    proxy: str = ''
+    cookiefile: str = ''
+    resolution: str = ''
+    filename_template: str = '%(title)s'
 
 class PlaylistRequest(BaseModel):
     url: str
@@ -137,6 +161,10 @@ class PlaylistRequest(BaseModel):
     rate_limit: int = 0
     max_items: int = 0
     concurrency: int = 3
+    proxy: str = ''
+    cookiefile: str = ''
+    resolution: str = ''
+    filename_template: str = '%(title)s'
 
 class ScheduleRequest(BaseModel):
     url: str
@@ -147,6 +175,10 @@ class ScheduleRequest(BaseModel):
     subtitle_lang: str = 'en'
     rate_limit: int = 0
     scheduled_time: str = Field(..., description='ISO format datetime or Unix timestamp')
+    proxy: str = ''
+    cookiefile: str = ''
+    resolution: str = ''
+    filename_template: str = '%(title)s'
 
 class QueueItemResponse(BaseModel):
     id: str
@@ -207,6 +239,8 @@ def start_download(req: DownloadRequest):
         audio_only=req.audio_only, convert_mp3=req.convert_mp3,
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit,
+        proxy=req.proxy, cookiefile=req.cookiefile,
+        resolution=req.resolution, filename_template=req.filename_template,
     )
     return QueueItemResponse(**{k: v for k, v in item.to_dict().items() if k in QueueItemResponse.model_fields})
 
@@ -222,6 +256,8 @@ def batch_download(req: BatchRequest):
         audio_only=req.audio_only, convert_mp3=req.convert_mp3,
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit,
+        proxy=req.proxy, cookiefile=req.cookiefile,
+        resolution=req.resolution, filename_template=req.filename_template,
     )
     return [
         QueueItemResponse(**{k: v for k, v in it.to_dict().items() if k in QueueItemResponse.model_fields})
@@ -255,6 +291,8 @@ def playlist_download(req: PlaylistRequest):
         audio_only=req.audio_only, convert_mp3=req.convert_mp3,
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit,
+        proxy=req.proxy, cookiefile=req.cookiefile,
+        resolution=req.resolution, filename_template=req.filename_template,
     )
 
     return {
@@ -287,6 +325,8 @@ def channel_download(req: PlaylistRequest):
         audio_only=req.audio_only, convert_mp3=req.convert_mp3,
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit,
+        proxy=req.proxy, cookiefile=req.cookiefile,
+        resolution=req.resolution, filename_template=req.filename_template,
     )
     return {
         'channel_title': ch_title,
@@ -319,6 +359,8 @@ def schedule_download(req: ScheduleRequest):
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit,
         scheduled_time=ts,
+        proxy=req.proxy, cookiefile=req.cookiefile,
+        resolution=req.resolution, filename_template=req.filename_template,
     )
     return QueueItemResponse(**{k: v for k, v in item.to_dict().items() if k in QueueItemResponse.model_fields})
 

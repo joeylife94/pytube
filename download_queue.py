@@ -253,12 +253,13 @@ class DownloadQueue:
                 continue
 
             if not self._download_fn:
-                logger.warning('No download function registered')
+                logger.error('No download function registered; marking item %s as failed. '
+                             'Call set_download_function() before start_worker().', item.id)
                 with self._lock:
-                    item.status = QueueItemStatus.PENDING
-                    item.started_at = 0.0
+                    item.status = QueueItemStatus.FAILED
+                    item.error = 'No download function registered'
+                    item.finished_at = time.time()
                     self._save()
-                self._stop_event.wait(5)
                 continue
 
             try:

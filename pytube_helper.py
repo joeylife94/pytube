@@ -414,11 +414,14 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
     if cookiefile and os.path.isfile(cookiefile):
         ydl_opts['cookiefile'] = cookiefile
     elif not cookiefile:
-        _base_dir = os.path.dirname(os.path.abspath(__file__))
-        for _candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
-            _path = os.path.join(_base_dir, _candidate)
-            if os.path.isfile(_path):
-                ydl_opts['cookiefile'] = _path
+        _search_dirs = [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]
+        for _search_dir in _search_dirs:
+            for _candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
+                _path = os.path.join(_search_dir, _candidate)
+                if os.path.isfile(_path):
+                    ydl_opts['cookiefile'] = _path
+                    break
+            if 'cookiefile' in ydl_opts:
                 break
 
     # JS runtime (node) + EJS remote solver for n-challenge / SABR-protected videos

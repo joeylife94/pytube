@@ -3,6 +3,8 @@ import os
 import time
 import datetime
 import logging
+import platform
+import subprocess
 import streamlit as st
 
 from pytube_helper import (
@@ -27,6 +29,41 @@ def human_size(b: float) -> str:
     return f"{b:.1f} TB"
 
 
+def _safe_getsize(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _open_folder(path: str) -> None:
+    """Open a directory in the system file manager (cross-platform)."""
+    abs_path = os.path.abspath(path)
+    system = platform.system()
+    if system == 'Windows':
+        os.startfile(abs_path)
+    elif system == 'Darwin':
+        subprocess.Popen(['open', abs_path])
+    else:
+        subprocess.Popen(['xdg-open', abs_path])
+
+
+def _reveal_file(path: str) -> None:
+    """Reveal a file in the system file manager (cross-platform)."""
+    abs_path = os.path.abspath(path)
+    system = platform.system()
+    if system == 'Windows':
+        proc = subprocess.Popen(['explorer', f'/select,{abs_path}'])
+    elif system == 'Darwin':
+        proc = subprocess.Popen(['open', '-R', abs_path])
+    else:
+        proc = subprocess.Popen(['xdg-open', os.path.dirname(abs_path)])
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def human_speed(bps: float) -> str:
     if bps is None or bps == 0:
         return "0 B/s"
@@ -42,7 +79,8 @@ def ensure_output_folder(folder: str) -> str:
         folder = os.path.join(os.getcwd(), 'downloads')
     try:
         os.makedirs(folder, exist_ok=True)
-    except Exception:
+    except Exception as e:
+        logger.warning('Failed to create output folder %s: %s — falling back to cwd', folder, e)
         folder = os.getcwd()
     return folder
 
@@ -105,12 +143,26 @@ with st.sidebar:
                                             help='yt-dlp --cookies 또는 브라우저 확장으로 내보낸 Netscape 형식')
     if g_cookie_file_upload is not None:
         _cookie_save_path = os.path.join(output_folder, '.uploaded_cookies.txt')
-        with open(_cookie_save_path, 'wb') as _cf:
-            _cf.write(g_cookie_file_upload.read())
-        st.session_state['g_cookiefile_path'] = _cookie_save_path
-        st.caption(f'✅ 쿠키 파일 저장됨')
+        _MAX_COOKIE_SIZE = 5 * 1024 * 1024  # 5MB
+        if g_cookie_file_upload.size > _MAX_COOKIE_SIZE:
+            st.error(f'❌ 쿠키 파일이 너무 큽니다 (최대 5MB, 현재 {g_cookie_file_upload.size // 1024}KB)')
+        else:
+            _prev = st.session_state.get('g_cookiefile_path')
+            if _prev and os.path.isfile(_prev):
+                st.info(f'ℹ️ 기존 쿠키 파일을 교체합니다: `{os.path.basename(_prev)}`')
+            try:
+                with open(_cookie_save_path, 'wb') as _cf:
+                    _cf.write(g_cookie_file_upload.read())
+                st.session_state['g_cookiefile_path'] = _cookie_save_path
+                st.caption(f'✅ 쿠키 파일 저장됨')
+            except OSError as _e:
+                st.error(f'❌ 쿠키 파일 저장 실패: {_e}')
+                logger.exception('Failed to save uploaded cookie file')
     g_cookiefile = st.session_state.get('g_cookiefile_path')
-    if g_cookiefile and os.path.isfile(g_cookiefile) and g_cookie_file_upload is None:
+    if g_cookiefile and not os.path.isfile(g_cookiefile):
+        st.session_state.pop('g_cookiefile_path', None)
+        g_cookiefile = None
+    if g_cookiefile and g_cookie_file_upload is None:
         st.caption(f'📄 쿠키 파일 유지 중: `{os.path.basename(g_cookiefile)}`')
 
     # 프록시 설정
@@ -143,8 +195,7 @@ with st.sidebar:
             st.success(f'Removed {n}') if n else st.info('None found')
     with col_open:
         if st.button('📂 폴더 열기'):
-            import subprocess
-            subprocess.Popen(f'explorer "{os.path.abspath(output_folder)}"')
+            _open_folder(output_folder)
 
     st.divider()
     st.header('📜 History')
@@ -160,8 +211,7 @@ with st.sidebar:
                 if filepath and os.path.isfile(filepath):
                     if st.button('📂', key=f"hist_{hi}_{h.get('url','')[-8:]}",
                                  help='파일 열기'):
-                        import subprocess
-                        subprocess.Popen(f'explorer /select,"{os.path.abspath(filepath)}"')
+                        _reveal_file(filepath)
         if st.button('Clear all history'):
             clear_history(output_folder)
             st.rerun()
@@ -227,7 +277,7 @@ def _get_queue() -> DownloadQueue:
                     fp = ydl.prepare_filename(info)
             record_download(item.url, item.output_folder, fp,
                             title=info.get('title', ''),
-                            size=os.path.getsize(fp) if fp and os.path.isfile(fp) else 0)
+                            size=_safe_getsize(fp))
             return fp
 
         q.set_download_function(_do_download)
@@ -330,8 +380,8 @@ with tab_single:
                             pct = int(downloaded / total * 100) if total > 0 else 0
                             progress_bar.progress(min(pct, 100))
                             status_text.text(f"{human_size(downloaded)}/{human_size(total)} — {human_speed(speed or 0)}")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug('Progress UI update failed: %s', e)
 
                     with st.spinner('Downloading...'):
                         try:
@@ -368,10 +418,9 @@ with tab_single:
                             </script>
                             """, height=0)
                             if st.button('📂 파일 열기', key='open_single'):
-                                import subprocess
-                                subprocess.Popen(f'explorer /select,"{os.path.abspath(fname)}"')
+                                _reveal_file(fname)
                             record_download(url_single, output_folder, fname, title=title,
-                                            size=os.path.getsize(fname) if os.path.isfile(fname) else 0,
+                                            size=_safe_getsize(fname),
                                             mode='audio' if (g_audio_only or g_convert_mp3) else 'video')
                         except Exception as e:
                             st.error(f'❌ {e}')
@@ -441,8 +490,8 @@ with tab_playlist:
                     try:
                         progress_bar.progress(min(int(total / effective * 100), 100))
                         status_text.text(f"{total}/{effective} | ✅{done['ok']} ❌{done['err']}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug('Playlist progress UI update failed: %s', e)
 
                 with st.spinner(f'Downloading {effective} items...'):
                     try:
@@ -562,8 +611,8 @@ with tab_channel:
                     try:
                         progress_bar.progress(min(int(processed / total_ch * 100), 100))
                         status_text.text(f"{processed}/{total_ch} | ✅{done['ok']} ❌{done['err']}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug('Channel progress UI update failed: %s', e)
 
                 # Use pre-fetched URLs to avoid re-extracting the entire channel
                 urls_list = [it['url'] for it in ch_items if it.get('url')]
@@ -607,8 +656,8 @@ with tab_channel:
                                                     convert_mp3=g_convert_mp3, subtitle_langs=_get_sub_langs(),
                                                     rate_limit_kbps=g_rate_limit, cookies_from_browser=g_cookies_browser,
                                                     resolution=g_resolution, proxy=g_proxy, cookiefile=g_cookiefile)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning('Retry download failed for %s: %s', ru, e)
                         st.success('재시도 완료!')
                 with st.expander('📋 Log', expanded=True):
                     for entry in log:
@@ -922,7 +971,7 @@ with st.expander('📂 Files in output folder'):
                     continue
                 fpath = os.path.join(root, f)
                 rel = os.path.relpath(fpath, output_folder)
-                size = os.path.getsize(fpath) if os.path.isfile(fpath) else 0
+                size = _safe_getsize(fpath)
                 all_entries.append((rel, size))
 
         if all_entries:
