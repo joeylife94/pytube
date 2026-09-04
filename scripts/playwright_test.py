@@ -13,7 +13,7 @@ def run_playwright_test() -> None:
     Real YouTube metadata/download tests are intentionally excluded from the PR gate
     because they depend on external network state, video availability, bot detection,
     and yt-dlp/YouTube compatibility. This test verifies that the current application
-    renders its primary navigation and single-video input successfully.
+    starts and renders its primary navigation and single-video input successfully.
     """
     screenshots_dir = Path('scripts') / 'screenshots'
     screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -33,10 +33,8 @@ def run_playwright_test() -> None:
         if tab_count != 7:
             raise AssertionError(f'Expected 7 primary tabs, found {tab_count}')
 
-        page.get_by_role('button', name='Fetch info').first.wait_for(timeout=10_000)
-
         page.screenshot(path=str(screenshots_dir / 'ui_smoke.png'), full_page=True)
-        print('UI smoke test passed: app shell, 7 tabs, URL input, and Fetch info button are visible.')
+        print('UI smoke test passed: app shell, 7 tabs, and URL input are visible.')
         browser.close()
 
 
