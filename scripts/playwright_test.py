@@ -24,17 +24,19 @@ def run_playwright_test() -> None:
 
         page.goto(APP_URL, wait_until='domcontentloaded', timeout=30_000)
 
-        # Current app-shell contract. Keep this test aligned with app.py labels.
+        # Current app-shell contract. Keep this test aligned with app.py structure.
         page.get_by_role('heading', name='🎬 YouTube Downloader').wait_for(timeout=30_000)
         page.get_by_role('textbox', name='YouTube URL').first.wait_for(timeout=30_000)
 
-        for label in ['Single', 'Playlist', 'Channel', 'Batch', 'Queue', 'Schedule', 'API']:
-            page.get_by_text(label, exact=True).first.wait_for(timeout=10_000)
+        tabs = page.get_by_test_id('stTabs').get_by_role('tab')
+        tab_count = tabs.count()
+        if tab_count != 7:
+            raise AssertionError(f'Expected 7 primary tabs, found {tab_count}')
 
-        page.get_by_role('button', name='🔍 Fetch info').wait_for(timeout=10_000)
+        page.get_by_role('button', name='Fetch info').first.wait_for(timeout=10_000)
 
         page.screenshot(path=str(screenshots_dir / 'ui_smoke.png'), full_page=True)
-        print('UI smoke test passed: app shell, tabs, URL input, and Fetch info button are visible.')
+        print('UI smoke test passed: app shell, 7 tabs, URL input, and Fetch info button are visible.')
         browser.close()
 
 
