@@ -10,7 +10,10 @@ import math
 from urllib.parse import urlparse, parse_qs
 import logging
 
-from download_core import download_with_ytdlp as _core_download_with_ytdlp
+from download_core import (
+    download_with_ytdlp as _core_download_with_ytdlp,
+    _create_progress_hook as _create_ytdlp_progress_hook,
+)
 
 # Constants
 DEFAULT_MAX_RETRIES = 2
