@@ -10,6 +10,8 @@ import math
 from urllib.parse import urlparse, parse_qs
 import logging
 
+from download_core import download_with_ytdlp as _core_download_with_ytdlp
+
 # Constants
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_BACKOFF_FACTOR = 1.5
@@ -293,19 +295,6 @@ def has_yt_dlp() -> bool:
     return YTDLP_AVAILABLE
 
 
-def _get_ffmpeg_location_from_env() -> Optional[str]:
-    """Return ffmpeg location from env vars if configured.
-
-    yt-dlp supports `ffmpeg_location` pointing to an ffmpeg binary or a directory.
-    We keep this optional so normal PATH-based resolution still works.
-    """
-    for key in ("FFMPEG_LOCATION", "FFMPEG_PATH", "FFMPEG_BIN"):
-        value = os.environ.get(key)
-        if value:
-            return value
-    return None
-
-
 def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, 
                         convert_mp3: bool = False,
                         progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
@@ -317,215 +306,24 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
                         filename_template: Optional[str] = None,
                         proxy: Optional[str] = None,
                         cookiefile: Optional[str] = None) -> str:
-    """Download using yt-dlp programmatic API.
-
-    Args:
-        url: YouTube video URL
-        output_path: Directory to save the file
-        audio_only: Whether to download audio only
-        convert_mp3: Whether to convert to MP3 (for audio)
-        progress_callback: Optional callback(filename, received_bytes, total_bytes, speed, eta)
-        progress_file: Optional path to write progress updates
-        subtitle_langs: Optional list of subtitle language codes (e.g. ['en', 'ko'])
-        rate_limit_kbps: Download speed limit in KB/s (0 = unlimited)
-        cookies_from_browser: Browser name to extract cookies from (e.g. 'chrome', 'firefox')
-        
-    Returns:
-        Path to the downloaded file
-        
-    Raises:
-        RuntimeError: If yt-dlp is not available
-    """
+    """Compatibility façade for the authoritative :mod:`download_core` path."""
     if not YTDLP_AVAILABLE:
         raise RuntimeError('yt-dlp is not available')
-
-    # sensible defaults (mimic options used in downloader_manager._build_ytdlp_opts)
-    _tmpl = filename_template if filename_template else '%(title)s'
-    ydl_opts = {
-        'outtmpl': os.path.join(output_path, f'{_tmpl}.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web'],
-                'player_skip': ['configs'],
-            }
-        },
-        'nocheckcertificate': True,
-        'no_check_certificate': True,
-        'age_limit': None,
-    }
-
-    ffmpeg_location = _get_ffmpeg_location_from_env()
-    if ffmpeg_location:
-        ydl_opts['ffmpeg_location'] = ffmpeg_location
-
-    if audio_only and convert_mp3:
-        # yt-dlp invokes ffmpeg for FFmpegExtractAudio; fail early with a clear message.
-        if not ffmpeg_location and shutil.which('ffmpeg') is None:
-            raise RuntimeError(
-                "MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH, "
-                "or set FFMPEG_LOCATION (or FFMPEG_PATH/FFMPEG_BIN) to the ffmpeg binary or directory."
-            )
-
-    if audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
-        if convert_mp3:
-            # Convert to MP3 using ffmpeg via yt-dlp postprocessor.
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        else:
-            ydl_opts['postprocessors'] = []
-    elif resolution and resolution != 'best':
-        # e.g. resolution='1080p' -> '1080', '720p' -> '720'
-        res_num = resolution.replace('p', '').replace('k', '000').replace('K', '000')
-        ydl_opts['format'] = (
-            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
-            f'/bestvideo[height<={res_num}]+bestaudio'
-            f'/best[height<={res_num}]/best'
-        )
-        ydl_opts['merge_output_format'] = 'mp4'
-    
-    # Subtitles
-    if subtitle_langs:
-        ydl_opts['writesubtitles'] = True
-        ydl_opts['writeautomaticsub'] = True
-        ydl_opts['subtitleslangs'] = list(subtitle_langs)
-        ydl_opts['subtitlesformat'] = 'srt/best'
-
-    # Speed limit
-    if rate_limit_kbps and rate_limit_kbps > 0:
-        ydl_opts['ratelimit'] = rate_limit_kbps * 1024  # convert KB/s to B/s
-
-    # Browser cookie extraction (bypasses 403 bot-detection)
-    if cookies_from_browser:
-        ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
-
-    # Cookie file (cookies.txt from browser export or yt-dlp --cookies)
-    # Auto-detect cookies file in workspace root if not explicitly given
-    if cookiefile and os.path.isfile(cookiefile):
-        ydl_opts['cookiefile'] = cookiefile
-    elif not cookiefile:
-        _search_dirs = [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]
-        for _search_dir in _search_dirs:
-            for _candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
-                _path = os.path.join(_search_dir, _candidate)
-                if os.path.isfile(_path):
-                    ydl_opts['cookiefile'] = _path
-                    break
-            if 'cookiefile' in ydl_opts:
-                break
-
-    # JS runtime (node) + EJS remote solver for n-challenge / SABR-protected videos
-    if shutil.which('node'):
-        ydl_opts['js_runtimes'] = {'node': {}}
-        ydl_opts['remote_components'] = ['ejs:github']
-
-    # Proxy (e.g. 'socks5://127.0.0.1:1080' or 'http://user:pass@host:port')
-    if proxy:
-        ydl_opts['proxy'] = proxy
-
-    ydl_opts['progress_hooks'] = [_create_ytdlp_progress_hook(progress_callback, progress_file)]
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        fname = _get_downloaded_filename(ydl, info)
-
-    # yt-dlp returns the pre-postprocess filename in many cases; if we requested
-    # MP3 conversion, the final file should be the same base name with .mp3.
-    if audio_only and convert_mp3 and fname:
-        base, _ext = os.path.splitext(fname)
-        fname = base + '.mp3'
-    
-    _write_completion_status(progress_file, fname)
-    return fname
-
-
-def _create_ytdlp_progress_hook(progress_callback: Optional[Callable], 
-                                progress_file: Optional[str]) -> Callable:
-    """Create a progress hook for yt-dlp downloads.
-    
-    Args:
-        progress_callback: Optional callback for progress updates
-        progress_file: Optional file path to write progress
-        
-    Returns:
-        Progress hook function
-    """
-    def _hook(d: Dict[str, Any]):
-        if d.get('status') != 'downloading':
-            return
-            
-        downloaded = d.get('downloaded_bytes', 0)
-        total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-        speed = d.get('speed') or 0.0  # yt-dlp returns None during initial buffering
-        eta = d.get('eta') or 0
-        filename = d.get('filename', '')
-        
-        if progress_callback:
-            try:
-                progress_callback(filename, downloaded, total, speed, eta)
-            except Exception as e:
-                logger.warning(f'Progress callback error: {e}')
-        
-        if progress_file:
-            try:
-                from progress_store import write_progress_file
-                write_progress_file(progress_file, {
-                    'status': 'downloading',
-                    'filename': filename,
-                    'downloaded': int(downloaded),
-                    'total': int(total),
-                    'speed': float(speed or 0.0),
-                    'eta': int(eta or 0),
-                })
-            except Exception as e:
-                logger.warning(f'Failed to write progress file: {e}')
-    
-    return _hook
-
-
-def _get_downloaded_filename(ydl, info: Dict[str, Any]) -> str:
-    """Extract the downloaded filename from yt-dlp info.
-    
-    Args:
-        ydl: YoutubeDL instance
-        info: Download info dictionary
-        
-    Returns:
-        Path to the downloaded file
-    """
-    if 'requested_downloads' in info and info['requested_downloads']:
-        return info['requested_downloads'][0].get('filepath')
-    return ydl.prepare_filename(info)
-
-
-def _write_completion_status(progress_file: Optional[str], filename: str):
-    """Write completion status to progress file if provided.
-    
-    Args:
-        progress_file: Optional progress file path
-        filename: Downloaded file path
-    """
-    if not progress_file:
-        return
-        
-    try:
-        from progress_store import write_progress_file
-        write_progress_file(progress_file, {
-            'status': 'completed',
-            'filename': filename,
-        })
-    except Exception as e:
-        logger.warning(f'Failed to write completion status: {e}')
+    return _core_download_with_ytdlp(
+        url,
+        output_path,
+        audio_only=audio_only,
+        convert_mp3=convert_mp3,
+        progress_callback=progress_callback,
+        progress_file=progress_file,
+        subtitle_langs=subtitle_langs,
+        rate_limit_kbps=rate_limit_kbps,
+        cookies_from_browser=cookies_from_browser,
+        resolution=resolution,
+        filename_template=filename_template,
+        proxy=proxy,
+        cookiefile=cookiefile,
+    )
 
 
 def download_fallback(url: str, output_path: str, audio_only: bool = False, 
