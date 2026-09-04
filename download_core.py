@@ -49,7 +49,11 @@ def _create_progress_hook(
         filename = data.get("filename", "") or ""
 
         if progress_callback:
-            progress_callback(filename, downloaded, total, speed, eta)
+            try:
+                progress_callback(filename, downloaded, total, speed, eta)
+            except Exception:
+                # UI/observer callback failures must not abort the media transfer.
+                pass
 
         if progress_file:
             try:
