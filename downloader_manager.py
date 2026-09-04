@@ -12,6 +12,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 
+from download_core import YTDLP_AVAILABLE, download_with_ytdlp_result
+
 # Third-party imports
 try:
     from pytube import YouTube
@@ -20,11 +22,7 @@ except ImportError:
     PYTUBE_AVAILABLE = False
     logging.warning("pytube not available - will use yt-dlp exclusively")
 
-try:
-    import yt_dlp
-    YTDLP_AVAILABLE = True
-except ImportError:
-    YTDLP_AVAILABLE = False
+if not YTDLP_AVAILABLE:
     logging.warning("yt-dlp not available")
 
 
@@ -157,58 +155,46 @@ class YoutubeDownloader:
             return DownloadResult(url, False, error=str(e), engine="pytube")
 
     def _build_ytdlp_opts(self, mode: DownloadMode) -> Dict[str, Any]:
+        """Legacy option-inspection helper retained for docs/verification.
+
+        Runtime yt-dlp execution no longer consumes this dictionary; downloads are
+        routed through :mod:`download_core`. This method remains only for backwards
+        compatibility with the repository's historical verification scripts.
         """
-        Build yt-dlp options dictionary based on download mode.
-        
-        Args:
-            mode: The download mode
-            
-        Returns:
-            Dictionary of yt-dlp options
-        """
-        # Base options for all modes
         base_opts = {
             'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
             'extract_flat': False,
-            # 403 에러 우회를 위한 설정
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Sec-Fetch-Mode': 'navigate',
             },
-            # YouTube 403 우회 전략
             'extractor_args': {
                 'youtube': {
                     'player_client': ['android', 'ios', 'web'],
                     'player_skip': ['configs'],
                 }
             },
-            # 추가 우회 옵션
             'nocheckcertificate': True,
             'no_check_certificate': True,
             'age_limit': None,
         }
 
-        # Browser cookie extraction (bypasses 403 bot-detection)
         if self.cookies_from_browser:
             base_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
         
         if mode == DownloadMode.VIDEO:
-            # Download best video+audio or best single file
             opts = {
                 **base_opts,
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'merge_output_format': 'mp4',
             }
-            
         elif mode == DownloadMode.MP3:
-            # MP3 conversion requires ffmpeg on PATH (yt-dlp calls it).
             if shutil.which('ffmpeg') is None:
                 raise RuntimeError("MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH (or set FFMPEG_LOCATION).")
-            # Download best audio and convert to MP3
             opts = {
                 **base_opts,
                 'format': 'bestaudio/best',
@@ -219,28 +205,24 @@ class YoutubeDownloader:
                 }],
                 'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
             }
-            
         elif mode == DownloadMode.VIDEO_SUBS:
-            # Download video + subtitles
             opts = {
                 **base_opts,
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'merge_output_format': 'mp4',
                 'writesubtitles': True,
-                'writeautomaticsub': True,  # Fallback to auto-generated
-                'subtitleslangs': ['en', 'ko'],  # Prioritize English and Korean
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'ko'],
                 'subtitlesformat': 'srt/vtt/best',
                 'postprocessors': [{
                     'key': 'FFmpegSubtitlesConvertor',
                     'format': 'srt',
                 }],
             }
-            
         elif mode == DownloadMode.SUBS_ONLY:
-            # Download ONLY subtitles (skip video/audio)
             opts = {
                 **base_opts,
-                'skip_download': True,  # Don't download video/audio
+                'skip_download': True,
                 'writesubtitles': True,
                 'writeautomaticsub': True,
                 'subtitleslangs': ['en', 'ko'],
@@ -252,46 +234,42 @@ class YoutubeDownloader:
             }
         else:
             raise ValueError(f"Unknown download mode: {mode}")
-        
         return opts
 
     def _download_with_ytdlp(self, url: str, mode: DownloadMode) -> DownloadResult:
-        """
-        Download using yt-dlp with mode-specific options.
-        
-        Args:
-            url: YouTube video URL
-            mode: Download mode
-            
-        Returns:
-            DownloadResult object
-        """
+        """Download via the authoritative :mod:`download_core` yt-dlp path."""
         try:
-            logger.info(f"Downloading with yt-dlp (mode={mode.value}): {url}")
-            
-            # Build options for this mode
-            ydl_opts = self._build_ytdlp_opts(mode)
-            
-            # Perform the download
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                # Determine the output file path
-                if mode == DownloadMode.MP3:
-                    # For MP3, the extension is changed by postprocessor
-                    filename = ydl.prepare_filename(info)
-                    output_file = str(Path(filename).with_suffix('.mp3'))
-                elif mode == DownloadMode.SUBS_ONLY:
-                    # For subtitles only, look for .srt files
-                    title = info.get('title', 'subtitle')
-                    # Multiple subtitle files may exist
-                    output_file = str(self.output_dir / f"{title}.*.srt")
-                else:
-                    output_file = ydl.prepare_filename(info)
-                
-                logger.info(f"Downloaded successfully: {output_file}")
-                return DownloadResult(url, True, file_path=output_file, engine="yt-dlp")
-                
+            logger.info(f"Downloading with yt-dlp core (mode={mode.value}): {url}")
+
+            kwargs: Dict[str, Any] = {
+                'cookies_from_browser': self.cookies_from_browser,
+            }
+            if mode == DownloadMode.MP3:
+                kwargs.update(audio_only=True, convert_mp3=True)
+            elif mode == DownloadMode.VIDEO_SUBS:
+                kwargs.update(
+                    subtitle_langs=['en', 'ko'],
+                    convert_subtitles_to_srt=True,
+                )
+            elif mode == DownloadMode.SUBS_ONLY:
+                kwargs.update(
+                    subtitle_langs=['en', 'ko'],
+                    subtitles_only=True,
+                    convert_subtitles_to_srt=True,
+                )
+
+            core_result = download_with_ytdlp_result(
+                url,
+                str(self.output_dir),
+                **kwargs,
+            )
+            logger.info(f"Downloaded successfully: {core_result.filepath}")
+            return DownloadResult(
+                url,
+                True,
+                file_path=core_result.filepath,
+                engine="yt-dlp",
+            )
         except Exception as e:
             logger.error(f"yt-dlp download failed for {url}: {str(e)}")
             return DownloadResult(url, False, error=str(e), engine="yt-dlp")
