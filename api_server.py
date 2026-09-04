@@ -14,8 +14,9 @@ from pytube_helper import (
     download_playlist, get_video_streams,
     extract_playlist_urls_with_titles, extract_channel_videos,
 )
-from download_db import is_downloaded, record_download, get_history, clear_history
-from download_queue import DownloadQueue, QueueItem, QueueItemStatus
+from download_db import is_downloaded, get_history, clear_history
+from download_queue import DownloadQueue, QueueItemStatus
+from queue_download_adapter import download_queue_item
 
 logger = logging.getLogger(__name__)
 
@@ -52,74 +53,7 @@ def _validate_output_folder(folder: str) -> str:
 
 # Shared queue instance
 _queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.queue.json'))
-
-
-def _do_download(item: QueueItem, progress_cb):
-    """Execute a queue item download."""
-    import yt_dlp
-    if not YTDLP_AVAILABLE:
-        raise RuntimeError('yt-dlp not available')
-
-    def _hook(d):
-        if d.get('status') != 'downloading':
-            return
-        downloaded = d.get('downloaded_bytes', 0)
-        total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
-        if total > 0:
-            progress_cb(int(downloaded / total * 100))
-
-    _tmpl = item.filename_template or '%(title)s'
-    ydl_opts = {
-        'outtmpl': os.path.join(item.output_folder, f'{_tmpl}.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'progress_hooks': [_hook],
-    }
-    if item.audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
-        if item.convert_mp3:
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-    elif item.resolution and item.resolution != 'best':
-        res_num = item.resolution.replace('p', '')
-        ydl_opts['format'] = (
-            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
-            f'/bestvideo[height<={res_num}]+bestaudio/best[height<={res_num}]/best'
-        )
-        ydl_opts['merge_output_format'] = 'mp4'
-    if item.subtitles:
-        ydl_opts['writesubtitles'] = True
-        ydl_opts['writeautomaticsub'] = True
-        langs = [l.strip() for l in item.subtitle_lang.split(',') if l.strip()]
-        ydl_opts['subtitleslangs'] = langs or ['en']
-        ydl_opts['subtitlesformat'] = 'srt/best'
-    if item.rate_limit and item.rate_limit > 0:
-        ydl_opts['ratelimit'] = item.rate_limit * 1024
-    if item.proxy:
-        ydl_opts['proxy'] = item.proxy
-    if item.cookiefile and os.path.isfile(item.cookiefile):
-        ydl_opts['cookiefile'] = item.cookiefile
-    if item.cookies_from_browser:
-        ydl_opts['cookiesfrombrowser'] = (item.cookies_from_browser,)
-
-    os.makedirs(item.output_folder, exist_ok=True)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(item.url, download=True)
-        if 'requested_downloads' in info and info['requested_downloads']:
-            filepath = info['requested_downloads'][0].get('filepath', '')
-        else:
-            filepath = ydl.prepare_filename(info)
-
-    record_download(item.url, item.output_folder, filepath,
-                    title=info.get('title', ''),
-                    size=os.path.getsize(filepath) if os.path.isfile(filepath) else 0,
-                    mode='audio' if (item.audio_only or item.convert_mp3) else 'video')
-    return filepath
-
-_queue.set_download_function(_do_download)
+_queue.set_download_function(download_queue_item)
 _queue.start_worker()
 
 # ─── Request/Response models ────────────────────────────────────────────────
