@@ -16,6 +16,7 @@ from pytube_helper import (
 )
 from download_db import is_downloaded, record_download, get_history, clear_history
 from download_queue import DownloadQueue, QueueItemStatus
+from queue_download_adapter import download_queue_item
 
 logger = logging.getLogger(__name__)
 
@@ -231,56 +232,7 @@ def _get_queue() -> DownloadQueue:
     """Get or create the shared queue instance."""
     if 'dl_queue' not in st.session_state:
         q = DownloadQueue(persist_path=os.path.join(output_folder, '.queue.json'))
-
-        def _do_download(item, progress_cb):
-            import yt_dlp as _yt_dlp
-            _tmpl = item.filename_template or '%(title)s'
-            ydl_opts = {
-                'outtmpl': os.path.join(item.output_folder, f'{_tmpl}.%(ext)s'),
-                'quiet': True, 'no_warnings': True,
-                'progress_hooks': [lambda d: progress_cb(
-                    int(d.get('downloaded_bytes', 0) / max(d.get('total_bytes') or d.get('total_bytes_estimate') or 1, 1) * 100)
-                ) if d.get('status') == 'downloading' else None],
-            }
-            if item.audio_only:
-                ydl_opts['format'] = 'bestaudio/best'
-                if item.convert_mp3:
-                    ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
-            elif item.resolution and item.resolution != 'best':
-                res_num = item.resolution.replace('p', '')
-                ydl_opts['format'] = (
-                    f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
-                    f'/bestvideo[height<={res_num}]+bestaudio/best[height<={res_num}]/best'
-                )
-                ydl_opts['merge_output_format'] = 'mp4'
-            if item.subtitles:
-                ydl_opts['writesubtitles'] = True
-                ydl_opts['writeautomaticsub'] = True
-                langs = [l.strip() for l in item.subtitle_lang.split(',') if l.strip()]
-                ydl_opts['subtitleslangs'] = langs or ['en']
-                ydl_opts['subtitlesformat'] = 'srt/best'
-            if item.rate_limit > 0:
-                ydl_opts['ratelimit'] = item.rate_limit * 1024
-            if item.proxy:
-                ydl_opts['proxy'] = item.proxy
-            if item.cookiefile and os.path.isfile(item.cookiefile):
-                ydl_opts['cookiefile'] = item.cookiefile
-            if item.cookies_from_browser:
-                ydl_opts['cookiesfrombrowser'] = (item.cookies_from_browser,)
-
-            os.makedirs(item.output_folder, exist_ok=True)
-            with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(item.url, download=True)
-                if 'requested_downloads' in info and info['requested_downloads']:
-                    fp = info['requested_downloads'][0].get('filepath', '')
-                else:
-                    fp = ydl.prepare_filename(info)
-            record_download(item.url, item.output_folder, fp,
-                            title=info.get('title', ''),
-                            size=_safe_getsize(fp))
-            return fp
-
-        q.set_download_function(_do_download)
+        q.set_download_function(download_queue_item)
         q.start_worker()
         st.session_state['dl_queue'] = q
     return st.session_state['dl_queue']
