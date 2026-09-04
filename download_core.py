@@ -109,6 +109,8 @@ def build_ytdlp_options(
     progress_callback: Optional[ProgressCallback] = None,
     progress_file: Optional[str] = None,
     subtitle_langs: Optional[List[str]] = None,
+    subtitles_only: bool = False,
+    convert_subtitles_to_srt: bool = False,
     rate_limit_kbps: int = 0,
     cookies_from_browser: Optional[str] = None,
     resolution: Optional[str] = None,
@@ -160,7 +162,9 @@ def build_ytdlp_options(
                 "or set FFMPEG_LOCATION (or FFMPEG_PATH/FFMPEG_BIN) to the ffmpeg binary or directory."
             )
 
-    if audio_only:
+    if subtitles_only:
+        options["skip_download"] = True
+    elif audio_only:
         options["format"] = "bestaudio/best"
         if convert_mp3:
             options["postprocessors"] = [
@@ -181,11 +185,18 @@ def build_ytdlp_options(
         )
         options["merge_output_format"] = "mp4"
 
-    if subtitle_langs:
+    if subtitle_langs or subtitles_only:
         options["writesubtitles"] = True
         options["writeautomaticsub"] = True
-        options["subtitleslangs"] = list(subtitle_langs)
+        options["subtitleslangs"] = list(subtitle_langs or ["en"])
         options["subtitlesformat"] = "srt/best"
+        if convert_subtitles_to_srt:
+            options.setdefault("postprocessors", []).append(
+                {
+                    "key": "FFmpegSubtitlesConvertor",
+                    "format": "srt",
+                }
+            )
 
     if rate_limit_kbps and rate_limit_kbps > 0:
         options["ratelimit"] = rate_limit_kbps * 1024
@@ -234,6 +245,8 @@ def download_with_ytdlp_result(
     progress_callback: Optional[ProgressCallback] = None,
     progress_file: Optional[str] = None,
     subtitle_langs: Optional[List[str]] = None,
+    subtitles_only: bool = False,
+    convert_subtitles_to_srt: bool = False,
     rate_limit_kbps: int = 0,
     cookies_from_browser: Optional[str] = None,
     resolution: Optional[str] = None,
@@ -253,6 +266,8 @@ def download_with_ytdlp_result(
         progress_callback=progress_callback,
         progress_file=progress_file,
         subtitle_langs=subtitle_langs,
+        subtitles_only=subtitles_only,
+        convert_subtitles_to_srt=convert_subtitles_to_srt,
         rate_limit_kbps=rate_limit_kbps,
         cookies_from_browser=cookies_from_browser,
         resolution=resolution,
@@ -263,7 +278,11 @@ def download_with_ytdlp_result(
 
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
-        filename = _get_downloaded_filename(ydl, info)
+        if subtitles_only:
+            title = info.get("title", "subtitle") or "subtitle"
+            filename = os.path.join(output_path, f"{title}.*.srt")
+        else:
+            filename = _get_downloaded_filename(ydl, info)
 
     if audio_only and convert_mp3 and filename:
         base, _ext = os.path.splitext(filename)
@@ -281,6 +300,8 @@ def download_with_ytdlp(
     progress_callback: Optional[ProgressCallback] = None,
     progress_file: Optional[str] = None,
     subtitle_langs: Optional[List[str]] = None,
+    subtitles_only: bool = False,
+    convert_subtitles_to_srt: bool = False,
     rate_limit_kbps: int = 0,
     cookies_from_browser: Optional[str] = None,
     resolution: Optional[str] = None,
@@ -297,6 +318,8 @@ def download_with_ytdlp(
         progress_callback=progress_callback,
         progress_file=progress_file,
         subtitle_langs=subtitle_langs,
+        subtitles_only=subtitles_only,
+        convert_subtitles_to_srt=convert_subtitles_to_srt,
         rate_limit_kbps=rate_limit_kbps,
         cookies_from_browser=cookies_from_browser,
         resolution=resolution,
