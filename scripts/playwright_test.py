@@ -26,7 +26,7 @@ def run_playwright_test() -> None:
 
         # Current app-shell contract. Keep this test aligned with app.py labels.
         page.get_by_role('heading', name='🎬 YouTube Downloader').wait_for(timeout=30_000)
-        page.get_by_label('YouTube URL').wait_for(timeout=30_000)
+        page.get_by_role('textbox', name='YouTube URL').first.wait_for(timeout=30_000)
 
         for label in ['Single', 'Playlist', 'Channel', 'Batch', 'Queue', 'Schedule', 'API']:
             page.get_by_text(label, exact=True).first.wait_for(timeout=10_000)
