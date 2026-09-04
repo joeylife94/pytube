@@ -8,6 +8,7 @@ and actual YoutubeDL execution belong in this module.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 import shutil
 from typing import Any, Callable, Dict, List, Optional
@@ -21,6 +22,14 @@ except ImportError:  # pragma: no cover - exercised only in minimal installs
 
 
 ProgressCallback = Callable[[str, int, int, float, float], None]
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    """Stable result returned by the core to adapters that need metadata."""
+
+    filepath: str
+    title: str = ""
 
 
 def get_ffmpeg_location_from_env() -> Optional[str]:
@@ -217,7 +226,7 @@ def _write_completion_status(progress_file: Optional[str], filename: str) -> Non
         pass
 
 
-def download_with_ytdlp(
+def download_with_ytdlp_result(
     url: str,
     output_path: str,
     audio_only: bool = False,
@@ -231,8 +240,8 @@ def download_with_ytdlp(
     filename_template: Optional[str] = None,
     proxy: Optional[str] = None,
     cookiefile: Optional[str] = None,
-) -> str:
-    """Execute a download through the authoritative yt-dlp core."""
+) -> DownloadResult:
+    """Execute a download and return the stable adapter-facing result."""
     if not YTDLP_AVAILABLE:
         raise RuntimeError("yt-dlp is not available")
 
@@ -261,4 +270,37 @@ def download_with_ytdlp(
         filename = base + ".mp3"
 
     _write_completion_status(progress_file, filename)
-    return filename
+    return DownloadResult(filepath=filename, title=info.get("title", "") or "")
+
+
+def download_with_ytdlp(
+    url: str,
+    output_path: str,
+    audio_only: bool = False,
+    convert_mp3: bool = False,
+    progress_callback: Optional[ProgressCallback] = None,
+    progress_file: Optional[str] = None,
+    subtitle_langs: Optional[List[str]] = None,
+    rate_limit_kbps: int = 0,
+    cookies_from_browser: Optional[str] = None,
+    resolution: Optional[str] = None,
+    filename_template: Optional[str] = None,
+    proxy: Optional[str] = None,
+    cookiefile: Optional[str] = None,
+) -> str:
+    """Compatibility API that returns only the downloaded filepath."""
+    return download_with_ytdlp_result(
+        url,
+        output_path,
+        audio_only=audio_only,
+        convert_mp3=convert_mp3,
+        progress_callback=progress_callback,
+        progress_file=progress_file,
+        subtitle_langs=subtitle_langs,
+        rate_limit_kbps=rate_limit_kbps,
+        cookies_from_browser=cookies_from_browser,
+        resolution=resolution,
+        filename_template=filename_template,
+        proxy=proxy,
+        cookiefile=cookiefile,
+    ).filepath
