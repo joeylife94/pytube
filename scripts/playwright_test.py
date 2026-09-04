@@ -1,87 +1,40 @@
-from playwright.sync_api import sync_playwright
-import time
-import os
 from pathlib import Path
+import os
+
+from playwright.sync_api import sync_playwright
 
 APP_URL = 'http://localhost:8501'
-TEST_URL = 'https://youtu.be/-CpaiHzIRNc?si=OdbUScvmYnvPXUjf'
-
-# Decide headless mode: in CI we run headless. You can force headless by setting PLAYWRIGHT_HEADLESS=1
 HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS') == '1' or os.getenv('CI') is not None
 
-def run_playwright_test():
+
+def run_playwright_test() -> None:
+    """Smoke-test the Streamlit shell without depending on live YouTube responses.
+
+    Real YouTube metadata/download tests are intentionally excluded from the PR gate
+    because they depend on external network state, video availability, bot detection,
+    and yt-dlp/YouTube compatibility. This test verifies that the current application
+    renders its primary navigation and single-video input successfully.
+    """
     screenshots_dir = Path('scripts') / 'screenshots'
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context()
-        page = context.new_page()
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
 
-        # Print console messages from the page to our stdout for debugging
-        def on_console(msg):
-            try:
-                print(f'PAGE LOG: {msg.type}: {msg.text}')
-            except Exception:
-                pass
+        page.goto(APP_URL, wait_until='domcontentloaded', timeout=30_000)
 
-        page.on('console', on_console)
+        # Current app-shell contract. Keep this test aligned with app.py labels.
+        page.get_by_role('heading', name='🎬 YouTube Downloader').wait_for(timeout=30_000)
+        page.get_by_label('YouTube URL').wait_for(timeout=30_000)
 
-        page.goto(APP_URL)
-        time.sleep(1)
+        for label in ['Single', 'Playlist', 'Channel', 'Batch', 'Queue', 'Schedule', 'API']:
+            page.get_by_text(label, exact=True).first.wait_for(timeout=10_000)
 
-        # Fill URL (first text input is the video URL)
-        page.fill('input[type="text"]', TEST_URL)
-        time.sleep(0.5)
+        page.get_by_role('button', name='🔍 Fetch info').wait_for(timeout=10_000)
 
-        # Ensure "Show live progress" is checked
-        try:
-            if not page.is_checked('text=Show live progress in UI'):
-                page.click('text=Show live progress in UI')
-                time.sleep(0.2)
-        except Exception:
-            # ignore if checkbox not found
-            pass
-
-        # Click Start download
-        page.click('text=Start download')
-
-        # Wait for metadata/title to appear (the app writes a 'Title:' line or an info message)
-        try:
-            page.wait_for_selector('text=Title:', timeout=20000)
-            print('Metadata title appeared')
-        except Exception:
-            # fallback: wait for the yt-dlp info message
-            try:
-                page.wait_for_selector('text=Metadata fetched via yt-dlp', timeout=10000)
-                print('Metadata fetched via yt-dlp appeared')
-            except Exception as e:
-                print('Metadata did not appear before timeout:', e)
-
-        # Take a screenshot after metadata phase
-        page.screenshot(path='scripts/screenshots/after_fetch.png')
-
-        # Try to find and click the download button
-        try:
-            page.wait_for_selector('text=Download video now (yt-dlp)', timeout=10000)
-            page.click('text=Download video now (yt-dlp)')
-            print('Clicked Download video now (yt-dlp)')
-        except Exception as e:
-            print('Download button not found after metadata wait:', e)
-            page.screenshot(path='scripts/screenshots/not_found_after_fetch.png')
-            # save html for inspection
-            with open('scripts/screenshots/page_after_fetch.html', 'w', encoding='utf-8') as f:
-                f.write(page.content())
-            browser.close()
-            raise
-
-        # Capture live progress screenshots for up to 30s
-        for i in range(30):
-            page.screenshot(path=f'scripts/screenshots/progress_{i:02d}.png')
-            time.sleep(1)
-
-        page.screenshot(path='scripts/screenshots/final.png')
-        print('Screenshots saved to scripts/screenshots/')
+        page.screenshot(path=str(screenshots_dir / 'ui_smoke.png'), full_page=True)
+        print('UI smoke test passed: app shell, tabs, URL input, and Fetch info button are visible.')
         browser.close()
 
 
