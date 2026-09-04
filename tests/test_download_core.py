@@ -96,6 +96,41 @@ def test_download_core_returns_postprocessed_mp3_path(tmp_path, monkeypatch):
     assert captured["options"]["postprocessors"][0]["key"] == "FFmpegExtractAudio"
 
 
+def test_subtitles_only_is_a_core_mode(tmp_path, monkeypatch):
+    captured = {}
+
+    class DummyYDL:
+        def __init__(self, options):
+            captured["options"] = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            return {"title": "captions"}
+
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", DummyYDL)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    result = download_core.download_with_ytdlp_result(
+        "https://example.invalid/video",
+        str(tmp_path),
+        subtitles_only=True,
+        subtitle_langs=["en", "ko"],
+        convert_subtitles_to_srt=True,
+    )
+
+    assert result.filepath == str(tmp_path / "captions.*.srt")
+    assert result.title == "captions"
+    assert captured["options"]["skip_download"] is True
+    assert captured["options"]["subtitleslangs"] == ["en", "ko"]
+    assert captured["options"]["postprocessors"][0]["key"] == "FFmpegSubtitlesConvertor"
+
+
 def test_helper_compatibility_facade_delegates(monkeypatch, tmp_path):
     import pytube_helper
 
@@ -123,3 +158,35 @@ def test_helper_compatibility_facade_delegates(monkeypatch, tmp_path):
     assert captured["kwargs"]["resolution"] == "720p"
     assert captured["kwargs"]["rate_limit_kbps"] == 128
     assert captured["kwargs"]["subtitle_langs"] == ["ko"]
+
+
+def test_downloader_manager_ytdlp_runtime_delegates_to_core(tmp_path, monkeypatch):
+    import downloader_manager
+
+    captured = {}
+
+    def fake_core(url, output_path, **kwargs):
+        captured["url"] = url
+        captured["output_path"] = output_path
+        captured["kwargs"] = kwargs
+        return download_core.DownloadResult(
+            filepath=str(tmp_path / "managed.mp3"),
+            title="Managed",
+        )
+
+    monkeypatch.setattr(downloader_manager, "download_with_ytdlp_result", fake_core)
+    downloader = downloader_manager.YoutubeDownloader(
+        output_dir=str(tmp_path),
+        preferred_engine="yt-dlp",
+    )
+
+    result = downloader._download_with_ytdlp(
+        "https://example.invalid/video",
+        downloader_manager.DownloadMode.MP3,
+    )
+
+    assert result.success is True
+    assert result.file_path == str(tmp_path / "managed.mp3")
+    assert result.engine == "yt-dlp"
+    assert captured["kwargs"]["audio_only"] is True
+    assert captured["kwargs"]["convert_mp3"] is True
