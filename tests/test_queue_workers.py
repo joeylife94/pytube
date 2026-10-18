@@ -127,3 +127,12 @@ def test_load_ignores_unknown_fields_instead_of_dropping_queue(tmp_path):
     ]), encoding='utf-8')
     q = DownloadQueue(persist_path=str(path))
     assert [i.id for i in q.get_all()] == ['keep0001']
+
+
+def test_progress_cb_with_unknown_total_keeps_percentage(tmp_path):
+    q = DownloadQueue(persist_path=str(tmp_path / 'q.json'))
+    item = q.add('https://youtu.be/live', str(tmp_path))
+    cb = q._make_progress_cb(q._pick_next())
+    cb(30, downloaded=300, total=1000)
+    cb(None, downloaded=5000, total=0, speed=100.0)
+    assert (item.progress, item.downloaded_bytes, item.total_bytes, item.speed) == (30, 5000, 0, 100.0)

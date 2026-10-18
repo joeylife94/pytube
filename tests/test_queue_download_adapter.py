@@ -86,3 +86,30 @@ def test_queue_adapter_records_audio_mode_for_mp3(tmp_path, monkeypatch):
 
     queue_download_adapter.download_queue_item(item, lambda _pct: None)
     assert recorded["mode"] == "audio"
+
+
+def test_queue_adapter_reports_progress_when_total_is_unknown(tmp_path, monkeypatch):
+    """Live streams report no total size; the callback must still run so cancel works."""
+    from download_errors import DownloadCancelled
+
+    def fake_download(url, output_folder, **kwargs):
+        kwargs["progress_callback"]("live.ts", 4096, 0, 512.0, 0)
+        return DownloadResult(filepath="", title="")
+
+    monkeypatch.setattr(queue_download_adapter, "download_with_ytdlp_result", fake_download)
+    monkeypatch.setattr(queue_download_adapter, "record_download", lambda *a, **k: None)
+    item = QueueItem(url="https://example.invalid/live", output_folder=str(tmp_path))
+
+    calls = []
+    queue_download_adapter.download_queue_item(item, lambda pct, **stats: calls.append((pct, stats)))
+    assert calls == [(None, {"downloaded": 4096, "total": 0, "speed": 512.0, "eta": 0})]
+
+    def cancelling_cb(pct, **stats):
+        raise DownloadCancelled("stop")
+
+    try:
+        queue_download_adapter.download_queue_item(item, cancelling_cb)
+    except DownloadCancelled:
+        pass
+    else:
+        raise AssertionError("cancellation must propagate even without a total size")

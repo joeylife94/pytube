@@ -314,15 +314,22 @@ def download_with_ytdlp_result(
     return DownloadResult(filepath=filename, title=info.get("title", "") or "")
 
 
-def _unique_path(path: str) -> str:
-    """path, or "name (1).ext", "name (2).ext", ... if it already exists."""
-    if not os.path.exists(path):
-        return path
+def _reserve_unique_path(path: str) -> str:
+    """Atomically claim path, or "name (1).ext", "name (2).ext", ... if taken.
+
+    The name is reserved by creating an empty placeholder with O_EXCL, so two
+    workers (or the web UI and API processes) finishing same-named files at the
+    same moment can never pick the same destination.
+    """
     base, ext = os.path.splitext(path)
-    n = 1
-    while os.path.exists(f"{base} ({n}){ext}"):
-        n += 1
-    return f"{base} ({n}){ext}"
+    n = 0
+    while True:
+        candidate = path if n == 0 else f"{base} ({n}){ext}"
+        try:
+            os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return candidate
+        except FileExistsError:
+            n += 1
 
 
 def _move_staged_files(staging: str, output_path: str) -> Dict[str, str]:
@@ -336,9 +343,16 @@ def _move_staged_files(staging: str, output_path: str) -> Dict[str, str]:
             if name.endswith((".part", ".ytdl", ".temp")):
                 continue
             src = os.path.join(root, name)
-            dest = _unique_path(os.path.join(output_path, os.path.relpath(src, staging)))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.move(src, dest)
+            target = os.path.join(output_path, os.path.relpath(src, staging))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            dest = _reserve_unique_path(target)
+            try:
+                # Staging lives inside output_path, so this is a same-volume rename
+                # that atomically replaces our own empty placeholder.
+                os.replace(src, dest)
+            except OSError:
+                os.remove(dest)
+                raise
             moved[os.path.normcase(os.path.abspath(src))] = dest
     return moved
 

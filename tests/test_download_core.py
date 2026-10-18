@@ -281,3 +281,24 @@ def test_failed_download_removes_staging_folder(tmp_path, monkeypatch):
     except RuntimeError:
         pass
     assert list(tmp_path.iterdir()) == []
+
+
+def test_reserve_unique_path_is_race_free(tmp_path):
+    """Concurrent finishers of same-named files must each get their own destination."""
+    import threading
+
+    target = str(tmp_path / "Same.mp4")
+    results, barrier = [], threading.Barrier(8)
+
+    def claim():
+        barrier.wait()
+        results.append(download_core._reserve_unique_path(target))
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(set(results)) == 8
+    assert str(tmp_path / "Same.mp4") in results
+    assert str(tmp_path / "Same (7).mp4") in results

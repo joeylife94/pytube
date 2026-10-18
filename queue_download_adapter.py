@@ -25,14 +25,15 @@ def _subtitle_langs(item: QueueItem):
 def download_queue_item(item: QueueItem, progress_cb: Callable[..., None]) -> str:
     """Execute one QueueItem through the canonical download core.
 
-    progress_cb receives (pct, downloaded=, total=, speed=, eta=). It may raise
-    download_errors.DownloadCancelled, which download_core lets through to abort.
+    progress_cb receives (pct, downloaded=, total=, speed=, eta=); pct is None when
+    the size is unknown (live streams). It is called on every progress update
+    because it may raise download_errors.DownloadCancelled, which download_core
+    lets through to abort.
     """
 
     def _progress(_filename: str, downloaded: int, total: int, speed: float, eta: float) -> None:
-        if total > 0:
-            pct = max(0, min(100, int(downloaded / total * 100)))
-            progress_cb(pct, downloaded=downloaded, total=total, speed=speed, eta=int(eta or 0))
+        pct = max(0, min(100, int(downloaded / total * 100))) if total > 0 else None
+        progress_cb(pct, downloaded=downloaded, total=total, speed=speed, eta=int(eta or 0))
 
     result = download_with_ytdlp_result(
         item.url,

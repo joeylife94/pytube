@@ -50,8 +50,12 @@ st.set_page_config(page_title='YouTube 다운로더', page_icon='🎬', layout='
 
 @st.cache_resource(show_spinner=False)
 def get_queue(persist_path: str) -> DownloadQueue:
-    """One queue + worker pool per process, shared by every browser tab."""
-    q = DownloadQueue(persist_path=persist_path)
+    """One queue + worker pool per process, shared by every browser tab.
+
+    Its concurrency is process-global too: it starts from the saved setting and
+    only changes when someone moves the slider (see apply_concurrency).
+    """
+    q = DownloadQueue(persist_path=persist_path, max_concurrent=load_settings().concurrency)
     q.set_download_function(download_queue_item)
     q.start_worker()
     return q
@@ -173,6 +177,10 @@ def enqueue_many(urls: List[str], titles: List[str], positions: List[Optional[in
     st.toast(f'{len(urls)}개를 대기열에 추가했어요', icon='⬇️')
 
 
+def apply_concurrency():
+    QUEUE.set_max_concurrent(st.session_state.get('cfg_concurrency', QUEUE.max_concurrent))
+
+
 def retry_all_failed():
     for item in QUEUE.get_all():
         if item.status == S.FAILED:
@@ -236,8 +244,12 @@ def render_sidebar() -> str:
                       on_click=open_folder, args=(output_folder,))
 
         st.subheader('다운로드')
-        st.slider('동시 다운로드', 1, MAX_CONCURRENT_LIMIT, key='cfg_concurrency',
-                  help='한 번에 받을 영상 수예요. 너무 높으면 YouTube가 속도를 제한할 수 있어요.')
+        # The queue is shared by every tab, so show its value instead of this tab's copy;
+        # a passive rerun in another tab must not push a stale value back.
+        st.session_state['cfg_concurrency'] = QUEUE.max_concurrent
+        st.slider('동시 다운로드', 1, MAX_CONCURRENT_LIMIT, key='cfg_concurrency', on_change=apply_concurrency,
+                  help='한 번에 받을 영상 수예요 (모든 브라우저 탭에 함께 적용돼요). '
+                       '너무 높으면 YouTube가 속도를 제한할 수 있어요.')
         st.text_input('자막 언어', key='cfg_subtitle_langs',
                       help='자막을 켰을 때 받을 언어 코드예요. 쉼표로 구분해요 (예: ko,en,ja).')
         st.number_input('속도 제한 (KB/s)', min_value=0, max_value=1_000_000, step=100,
@@ -622,6 +634,9 @@ def _render_active(item: QueueItem):
         elif item.total_bytes:
             text = (f'{item.progress}% · {human_size(item.downloaded_bytes)} / {human_size(item.total_bytes)}'
                     f' · {human_speed(item.speed)} · 남은 시간 {human_eta(item.eta)}')
+        elif item.downloaded_bytes:
+            # Live streams and some formats don't report a total size
+            text = f'{human_size(item.downloaded_bytes)} 받는 중 · {human_speed(item.speed)} (전체 크기 모름)'
         else:
             text = '준비 중...'
         st.progress(item.progress / 100, text=f'{_item_label(item)} · {text}')
@@ -771,7 +786,6 @@ def main():
     render_header(ffmpeg_ok, node_ok)
     render_options_bar(current_settings(), ffmpeg_ok)
     settings = current_settings()
-    QUEUE.set_max_concurrent(settings.concurrency)
 
     tabs = st.tabs(['🎬 영상', '📋 재생목록', '📺 채널', '📝 여러 URL', '⏰ 예약', '🔌 API'])
     with tabs[0]:

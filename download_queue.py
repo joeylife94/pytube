@@ -286,8 +286,9 @@ class DownloadQueue:
     def set_download_function(self, fn: Callable):
         """fn(item, progress_cb) -> filepath.
 
-        progress_cb(pct, downloaded=0, total=0, speed=0.0, eta=0) may raise
-        DownloadCancelled when the user cancelled the item; fn should let it propagate.
+        progress_cb(pct, downloaded=0, total=0, speed=0.0, eta=0) takes pct=None when
+        the size is unknown. It may raise DownloadCancelled when the user cancelled
+        the item; fn should call it on every update and let that propagate.
         """
         self._download_fn = fn
 
@@ -323,12 +324,13 @@ class DownloadQueue:
             self._save()
 
     def _make_progress_cb(self, item: QueueItem) -> Callable:
-        def _progress(pct: int, downloaded: int = 0, total: int = 0,
+        def _progress(pct: Optional[int], downloaded: int = 0, total: int = 0,
                       speed: float = 0.0, eta: int = 0):
             if item.id in self._cancel_requested:
                 raise DownloadCancelled(f'Download cancelled: {item.id}')
             with self._lock:
-                item.progress = max(0, min(int(pct), 100))
+                if pct is not None:  # None = total size unknown (e.g. live streams)
+                    item.progress = max(0, min(int(pct), 100))
                 item.downloaded_bytes = int(downloaded or 0)
                 item.total_bytes = int(total or 0)
                 item.speed = float(speed or 0.0)

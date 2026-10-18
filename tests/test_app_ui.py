@@ -96,3 +96,17 @@ def test_settings_persist_between_sessions(app, tmp_path):
     second = AppTest.from_file(APP, default_timeout=30)
     second.run()
     assert second.session_state['cfg_quality'] == '720'
+
+
+def test_concurrency_is_shared_and_not_reset_by_passive_tabs(app):
+    """The queue is process-wide: one tab's slider change must stick across other tabs' reruns."""
+    other = AppTest.from_file(APP, default_timeout=30)
+    other.run()
+
+    app.slider(key='cfg_concurrency').set_value(5).run()
+    other.run()  # passive rerun of a tab that still had the old value
+    assert other.slider(key='cfg_concurrency').value == 5
+
+    other.slider(key='cfg_concurrency').set_value(3).run()
+    app.run()
+    assert app.slider(key='cfg_concurrency').value == 3
