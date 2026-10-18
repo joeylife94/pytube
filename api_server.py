@@ -330,10 +330,11 @@ def remove_queue_item(item_id: str):
 
 @app.post('/api/queue/{item_id}/cancel', response_model=QueueItemResponse)
 def cancel_queue_item(item_id: str):
+    """Cancel a waiting item, or stop an active download at its next progress update."""
     item = _queue.get(item_id)
     if not item:
         _api_error(404, 'queue_item_not_found', 'Item not found', False)
-    if not _queue.cancel(item_id):
+    if not _queue.request_cancel(item_id):
         _api_error(409, 'invalid_queue_state', f'Cannot cancel item in state {item.status}', False)
     return _queue_response(_queue.get(item_id))
 

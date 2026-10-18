@@ -54,3 +54,16 @@ def test_info_endpoint_returns_ytdlp_metadata(client, monkeypatch):
     assert body['title'] == 'Clip'
     assert body['backend'] == 'yt-dlp'
     assert body['heights'] == [720, 360]
+
+
+def test_cancel_endpoint_stops_an_active_download(tmp_path, monkeypatch):
+    from download_queue import DownloadQueue, QueueItemStatus
+
+    q = DownloadQueue(persist_path=str(tmp_path / 'q.json'))
+    item = q.add('https://youtu.be/active', str(tmp_path))
+    q._pick_next()  # now DOWNLOADING
+    monkeypatch.setattr(api_server, '_queue', q)
+
+    response = api_server.cancel_queue_item(item.id)
+    assert response.status == QueueItemStatus.DOWNLOADING  # stops at the next progress update
+    assert item.id in q._cancel_requested
