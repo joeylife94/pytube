@@ -3,10 +3,14 @@ DownloaderManager Streamlit 데모 앱
 4가지 다운로드 모드를 브라우저에서 테스트할 수 있습니다.
 """
 
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 import streamlit as st
 from downloader_manager import DownloaderManager
-import os
-from pathlib import Path
 
 # 페이지 설정
 st.set_page_config(

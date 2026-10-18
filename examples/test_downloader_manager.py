@@ -7,6 +7,8 @@ import sys
 import logging
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 # Import the DownloaderManager
 from downloader_manager import DownloaderManager, DownloadMode
 

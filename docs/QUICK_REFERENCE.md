@@ -78,7 +78,7 @@ else:
 ## 🎨 Progress Callback (Integration)
 
 ```python
-from integration_examples import IntegratedDownloadService
+from examples.integration_examples import IntegratedDownloadService
 
 service = IntegratedDownloadService()
 
@@ -92,13 +92,13 @@ results = service.download_videos(urls, progress_callback=progress)
 
 ```bash
 # Run tests
-python test_downloader_manager.py
+python examples/test_downloader_manager.py
 
 # Run demo (dry-run)
-python quick_start_demo.py
+python examples/quick_start_demo.py
 
 # Run actual downloads (edit DEMO_MODE first)
-python quick_start_demo.py
+python examples/quick_start_demo.py
 ```
 
 ## ⚡ Engine Selection (Automatic)
@@ -114,9 +114,9 @@ Subtitle modes → ALWAYS uses yt-dlp (pytube unreliable)
 | File | Purpose | Lines |
 |------|---------|-------|
 | `downloader_manager.py` | Core implementation | 550 |
-| `test_downloader_manager.py` | Test suite | 300 |
-| `integration_examples.py` | Integration guide | 400 |
-| `quick_start_demo.py` | Quick demo | 250 |
+| `examples/test_downloader_manager.py` | Test suite | 300 |
+| `examples/integration_examples.py` | Integration guide | 400 |
+| `examples/quick_start_demo.py` | Quick demo | 250 |
 | `DOWNLOADER_MANAGER_README.md` | Full documentation | 500 |
 | `IMPLEMENTATION_SUMMARY.md` | Summary report | 500 |
 | `ARCHITECTURE_DIAGRAM.md` | Visual diagrams | 400 |
@@ -143,8 +143,8 @@ pip install yt-dlp
 - **Full Docs**: `DOWNLOADER_MANAGER_README.md`
 - **Architecture**: `ARCHITECTURE_DIAGRAM.md`
 - **Summary**: `IMPLEMENTATION_SUMMARY.md`
-- **Examples**: `integration_examples.py`
-- **Tests**: `test_downloader_manager.py`
+- **Examples**: `examples/integration_examples.py`
+- **Tests**: `examples/test_downloader_manager.py`
 
 ## 💡 Common Patterns
 
@@ -187,11 +187,11 @@ else:
 
 ## 🎓 Learning Path
 
-1. **Start**: Run `python quick_start_demo.py`
+1. **Start**: Run `python examples/quick_start_demo.py`
 2. **Try**: Use the examples above
-3. **Test**: Run `python test_downloader_manager.py`
+3. **Test**: Run `python examples/test_downloader_manager.py`
 4. **Read**: Check `DOWNLOADER_MANAGER_README.md`
-5. **Integrate**: See `integration_examples.py`
+5. **Integrate**: See `examples/integration_examples.py`
 
 ## 🚨 Important Rules
 
@@ -204,8 +204,8 @@ else:
 ## 📞 Support
 
 - Read docs in `DOWNLOADER_MANAGER_README.md`
-- Check examples in `integration_examples.py`
-- Run tests: `python test_downloader_manager.py`
+- Check examples in `examples/integration_examples.py`
+- Run tests: `python examples/test_downloader_manager.py`
 
 ---
 
