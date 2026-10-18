@@ -8,7 +8,7 @@ Features
 - Download entire playlists using pytube.Playlist
 
 Requirements
-- Python 3.8+
+- Python 3.10+ (required by yt-dlp and Streamlit)
 - Install Python packages from `requirements.txt`:
 # pytube Streamlit GUI
 
@@ -20,7 +20,7 @@ Features
 - Download entire playlists using pytube.Playlist (with optional yt-dlp fallback)
 
 Requirements
-- Python 3.8+
+- Python 3.10+ (required by yt-dlp and Streamlit)
 - Install Python packages from `requirements.txt`:
 
 Windows PowerShell example:
