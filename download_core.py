@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import shutil
+import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
 from download_errors import DownloadCancelled
@@ -31,6 +32,9 @@ except ImportError:
 
 
 ProgressCallback = Callable[[str, int, int, float, float], None]
+
+# Hidden per-download working folders inside the output folder (see download_with_ytdlp_result)
+STAGING_PREFIX = ".dl-"
 
 
 @dataclass(frozen=True)
@@ -174,14 +178,15 @@ def build_ytdlp_options(
             ]
         else:
             options["postprocessors"] = []
-    elif resolution and resolution != "best":
-        res_num = resolution.replace("p", "").replace("k", "000").replace("K", "000")
-        options["format"] = (
-            f"bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]"
-            f"/bestvideo[height<={res_num}]+bestaudio"
-            f"/best[height<={res_num}]/best"
-        )
-        options["merge_output_format"] = "mp4"
+    else:
+        # Highest resolution first; at equal resolution prefer mp4/m4a so the merged
+        # file is a widely playable .mp4 instead of .webm.
+        options["format_sort"] = ["res", "ext:mp4:m4a"]
+        if resolution and resolution != "best":
+            res_num = resolution.replace("p", "").replace("k", "000").replace("K", "000")
+            options["format"] = (
+                f"bv*[height<={res_num}]+ba/b[height<={res_num}]/bv*+ba/b"
+            )
 
     if subtitle_langs or subtitles_only:
         options["writesubtitles"] = True
@@ -255,42 +260,87 @@ def download_with_ytdlp_result(
     proxy: Optional[str] = None,
     cookiefile: Optional[str] = None,
 ) -> DownloadResult:
-    """Execute a download and return the stable adapter-facing result."""
+    """Execute a download and return the stable adapter-facing result.
+
+    yt-dlp writes into a private staging folder inside output_path and the
+    finished files are then moved next to the user's other downloads. Without
+    this, an audio download whose intermediate file shares a name with an
+    earlier video (e.g. both "Title.webm") is treated as "already downloaded",
+    converted from the video, and the video is deleted afterwards. It also keeps
+    concurrent downloads of same-titled videos from sharing .part files.
+    """
     if not YTDLP_AVAILABLE:
         raise RuntimeError("yt-dlp is not available")
 
     os.makedirs(output_path, exist_ok=True)
-    options = build_ytdlp_options(
-        output_path,
-        audio_only=audio_only,
-        convert_mp3=convert_mp3,
-        progress_callback=progress_callback,
-        progress_file=progress_file,
-        subtitle_langs=subtitle_langs,
-        subtitles_only=subtitles_only,
-        convert_subtitles_to_srt=convert_subtitles_to_srt,
-        rate_limit_kbps=rate_limit_kbps,
-        cookies_from_browser=cookies_from_browser,
-        resolution=resolution,
-        filename_template=filename_template,
-        proxy=proxy,
-        cookiefile=cookiefile,
-    )
+    staging = tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=output_path)
+    try:
+        options = build_ytdlp_options(
+            staging,
+            audio_only=audio_only,
+            convert_mp3=convert_mp3,
+            progress_callback=progress_callback,
+            progress_file=progress_file,
+            subtitle_langs=subtitle_langs,
+            subtitles_only=subtitles_only,
+            convert_subtitles_to_srt=convert_subtitles_to_srt,
+            rate_limit_kbps=rate_limit_kbps,
+            cookies_from_browser=cookies_from_browser,
+            resolution=resolution,
+            filename_template=filename_template,
+            proxy=proxy,
+            cookiefile=cookiefile,
+        )
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = "" if subtitles_only else _get_downloaded_filename(ydl, info)
+
+        if audio_only and convert_mp3 and filename:
+            base, _ext = os.path.splitext(filename)
+            filename = base + ".mp3"
+
+        moved = _move_staged_files(staging, output_path)
         if subtitles_only:
             title = info.get("title", "subtitle") or "subtitle"
             filename = os.path.join(output_path, f"{title}.*.srt")
-        else:
-            filename = _get_downloaded_filename(ydl, info)
-
-    if audio_only and convert_mp3 and filename:
-        base, _ext = os.path.splitext(filename)
-        filename = base + ".mp3"
+        elif filename:
+            key = os.path.normcase(os.path.abspath(filename))
+            filename = moved.get(key, filename)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
     _write_completion_status(progress_file, filename)
     return DownloadResult(filepath=filename, title=info.get("title", "") or "")
+
+
+def _unique_path(path: str) -> str:
+    """path, or "name (1).ext", "name (2).ext", ... if it already exists."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 1
+    while os.path.exists(f"{base} ({n}){ext}"):
+        n += 1
+    return f"{base} ({n}){ext}"
+
+
+def _move_staged_files(staging: str, output_path: str) -> Dict[str, str]:
+    """Move finished files from staging into output_path without overwriting anything.
+
+    Returns {normcase(abs staged path): final path}.
+    """
+    moved: Dict[str, str] = {}
+    for root, _dirs, files in os.walk(staging):
+        for name in files:
+            if name.endswith((".part", ".ytdl", ".temp")):
+                continue
+            src = os.path.join(root, name)
+            dest = _unique_path(os.path.join(output_path, os.path.relpath(src, staging)))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(src, dest)
+            moved[os.path.normcase(os.path.abspath(src))] = dest
+    return moved
 
 
 def download_with_ytdlp(

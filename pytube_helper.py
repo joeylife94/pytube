@@ -661,24 +661,47 @@ def extract_playlist_urls_with_titles(playlist_url: str) -> Dict[str, Any]:
     return {'playlist_title': playlist_title, 'items': [{'url': u, 'title': u} for u in urls]}
 
 
-def cleanup_part_files(output_path: str) -> int:
-    """Remove leftover .part files in the output directory to avoid WinError 32.
+STALE_STAGING_SECONDS = 6 * 3600
 
-    Returns the number of files removed.
+
+def _newest_mtime(folder: str) -> float:
+    newest = os.path.getmtime(folder)
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                pass
+    return newest
+
+
+def cleanup_part_files(output_path: str) -> int:
+    """Remove leftover .part files and abandoned download staging folders.
+
+    Staging folders (download_core.STAGING_PREFIX) are only removed once nothing
+    in them has changed for STALE_STAGING_SECONDS, so running downloads survive.
+    Returns the number of files/folders removed.
     """
+    from download_core import STAGING_PREFIX
+
     removed = 0
     try:
         for f in os.listdir(output_path):
-            if f.endswith('.part'):
-                fpath = os.path.join(output_path, f)
-                try:
+            fpath = os.path.join(output_path, f)
+            try:
+                if f.endswith('.part') and os.path.isfile(fpath):
                     os.remove(fpath)
                     removed += 1
                     logger.info('Removed leftover .part file: %s', fpath)
-                except OSError as e:
-                    logger.warning('Could not remove .part file %s: %s', fpath, e)
+                elif (f.startswith(STAGING_PREFIX) and os.path.isdir(fpath)
+                      and time.time() - _newest_mtime(fpath) > STALE_STAGING_SECONDS):
+                    shutil.rmtree(fpath)
+                    removed += 1
+                    logger.info('Removed abandoned staging folder: %s', fpath)
+            except OSError as e:
+                logger.warning('Could not remove %s: %s', fpath, e)
     except Exception as e:
-        logger.warning('Error scanning for .part files: %s', e)
+        logger.warning('Error scanning for leftover files: %s', e)
     return removed
 
 

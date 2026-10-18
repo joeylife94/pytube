@@ -54,7 +54,7 @@ def test_build_options_captures_runtime_controls(tmp_path, monkeypatch):
     )
 
     assert "height<=1080" in options["format"]
-    assert options["merge_output_format"] == "mp4"
+    assert options["format_sort"] == ["res", "ext:mp4:m4a"]
     assert options["subtitleslangs"] == ["en", "ko"]
     assert options["writesubtitles"] is True
     assert options["ratelimit"] == 512 * 1024
@@ -220,3 +220,64 @@ def test_downloader_manager_ytdlp_runtime_delegates_to_core(tmp_path, monkeypatc
     assert result.engine == "yt-dlp"
     assert captured["kwargs"]["audio_only"] is True
     assert captured["kwargs"]["convert_mp3"] is True
+
+
+def test_download_never_clobbers_existing_files(tmp_path, monkeypatch):
+    """Regression: an audio download named like an earlier video used to delete the video."""
+    video = tmp_path / "Clip.webm"
+    video.write_bytes(b"the earlier video")
+
+    class DummyYDL:
+        def __init__(self, options):
+            self.outtmpl = options["outtmpl"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            # yt-dlp writes into the template's folder (the private staging dir)
+            target = self.outtmpl.replace("%(title)s", "Clip").replace("%(ext)s", "webm")
+            assert os.path.dirname(target) != str(tmp_path), "must not write into output folder"
+            with open(target, "wb") as f:
+                f.write(b"new audio")
+            return {"title": "Clip", "requested_downloads": [{"filepath": target}]}
+
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", DummyYDL)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    result = download_core.download_with_ytdlp_result(
+        "https://example.invalid/video", str(tmp_path), audio_only=True)
+
+    assert video.read_bytes() == b"the earlier video"
+    assert result.filepath == str(tmp_path / "Clip (1).webm")
+    assert (tmp_path / "Clip (1).webm").read_bytes() == b"new audio"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(download_core.STAGING_PREFIX)]
+
+
+def test_failed_download_removes_staging_folder(tmp_path, monkeypatch):
+    class FailingYDL:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            raise RuntimeError("HTTP Error 503")
+
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", FailingYDL)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    try:
+        download_core.download_with_ytdlp_result("https://example.invalid/video", str(tmp_path))
+    except RuntimeError:
+        pass
+    assert list(tmp_path.iterdir()) == []
