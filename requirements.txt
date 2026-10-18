@@ -1,7 +1,8 @@
 streamlit>=1.0
 pytube>=12.1
 pydub>=0.25.1
-yt-dlp
+# [default] pulls in yt-dlp-ejs (YouTube JS challenge solver) so it isn't fetched from GitHub at runtime
+yt-dlp[default]>=2026.8.19
 fastapi>=0.100
 uvicorn>=0.20
 httpx>=0.24

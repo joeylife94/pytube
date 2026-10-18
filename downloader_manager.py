@@ -6,7 +6,6 @@ Supports batch downloads, MP3 conversion, video+subtitles, and subtitles-only mo
 
 import os
 import logging
-import shutil
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +25,8 @@ try:
 except ImportError:
     YTDLP_AVAILABLE = False
     logging.warning("yt-dlp not available")
+
+from pytube_helper import build_ytdlp_opts
 
 
 # Configure logging
@@ -166,93 +167,37 @@ class YoutubeDownloader:
         Returns:
             Dictionary of yt-dlp options
         """
-        # Base options for all modes
-        base_opts = {
-            'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
-            'quiet': False,
-            'no_warnings': False,
-            'extract_flat': False,
-            # 403 에러 우회를 위한 설정
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            # YouTube 403 우회 전략
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios', 'web'],
-                    'player_skip': ['configs'],
-                }
-            },
-            # 추가 우회 옵션
-            'nocheckcertificate': True,
-            'no_check_certificate': True,
-            'age_limit': None,
-        }
-
-        # Browser cookie extraction (bypasses 403 bot-detection)
-        if self.cookies_from_browser:
-            base_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
-        
-        if mode == DownloadMode.VIDEO:
-            # Download best video+audio or best single file
-            opts = {
-                **base_opts,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
-            }
-            
-        elif mode == DownloadMode.MP3:
-            # MP3 conversion requires ffmpeg on PATH (yt-dlp calls it).
-            if shutil.which('ffmpeg') is None:
-                raise RuntimeError("MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH (or set FFMPEG_LOCATION).")
-            # Download best audio and convert to MP3
-            opts = {
-                **base_opts,
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
-            }
-            
-        elif mode == DownloadMode.VIDEO_SUBS:
-            # Download video + subtitles
-            opts = {
-                **base_opts,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
-                'writesubtitles': True,
-                'writeautomaticsub': True,  # Fallback to auto-generated
-                'subtitleslangs': ['en', 'ko'],  # Prioritize English and Korean
-                'subtitlesformat': 'srt/vtt/best',
-                'postprocessors': [{
-                    'key': 'FFmpegSubtitlesConvertor',
-                    'format': 'srt',
-                }],
-            }
-            
-        elif mode == DownloadMode.SUBS_ONLY:
-            # Download ONLY subtitles (skip video/audio)
-            opts = {
-                **base_opts,
-                'skip_download': True,  # Don't download video/audio
-                'writesubtitles': True,
-                'writeautomaticsub': True,
-                'subtitleslangs': ['en', 'ko'],
-                'subtitlesformat': 'srt/vtt/best',
-                'postprocessors': [{
-                    'key': 'FFmpegSubtitlesConvertor',
-                    'format': 'srt',
-                }],
-            }
-        else:
+        # Shared base options (cookies, JS runtime, ffmpeg location, MP3 postprocessor)
+        # come from pytube_helper.build_ytdlp_opts; only mode-specific tweaks live here.
+        if not isinstance(mode, DownloadMode):
             raise ValueError(f"Unknown download mode: {mode}")
-        
+
+        with_subs = mode in (DownloadMode.VIDEO_SUBS, DownloadMode.SUBS_ONLY)
+        opts = build_ytdlp_opts(
+            str(self.output_dir),
+            audio_only=mode == DownloadMode.MP3,
+            convert_mp3=mode == DownloadMode.MP3,
+            subtitle_langs=['en', 'ko'] if with_subs else None,  # Prioritize English and Korean
+            cookies_from_browser=self.cookies_from_browser,
+        )
+        opts['quiet'] = False
+        opts['no_warnings'] = False
+
+        if mode in (DownloadMode.VIDEO, DownloadMode.VIDEO_SUBS):
+            # Download best video+audio or best single file
+            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            opts['merge_output_format'] = 'mp4'
+
+        if mode == DownloadMode.SUBS_ONLY:
+            opts['skip_download'] = True  # Don't download video/audio
+
+        if with_subs:
+            opts['subtitlesformat'] = 'srt/vtt/best'
+            opts['postprocessors'] = [{
+                'key': 'FFmpegSubtitlesConvertor',
+                'format': 'srt',
+            }]
+
         return opts
 
     def _download_with_ytdlp(self, url: str, mode: DownloadMode) -> DownloadResult:

@@ -23,6 +23,13 @@ except ImportError:
     YTDLP_AVAILABLE = False
 
 try:
+    # Installed by yt-dlp[default]; bundles the YouTube JS challenge solver locally.
+    import yt_dlp_ejs  # noqa: F401
+    YTDLP_EJS_AVAILABLE = True
+except ImportError:
+    YTDLP_EJS_AVAILABLE = False
+
+try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
 except ImportError:
@@ -306,7 +313,140 @@ def _get_ffmpeg_location_from_env() -> Optional[str]:
     return None
 
 
-def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False, 
+def _find_default_cookiefile() -> Optional[str]:
+    """Return a cookies file found next to this module or in the cwd, if any."""
+    for search_dir in (os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
+        for candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
+            path = os.path.join(search_dir, candidate)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+def build_ytdlp_opts(output_path: str, audio_only: bool = False,
+                     convert_mp3: bool = False,
+                     resolution: Optional[str] = None,
+                     subtitle_langs: Optional[List[str]] = None,
+                     rate_limit_kbps: int = 0,
+                     cookies_from_browser: Optional[str] = None,
+                     cookiefile: Optional[str] = None,
+                     proxy: Optional[str] = None,
+                     filename_template: Optional[str] = None,
+                     progress_hooks: Optional[List[Callable]] = None) -> Dict[str, Any]:
+    """Build the yt-dlp options shared by every download path (UI, queue, API).
+
+    YouTube client selection and User-Agent are left to yt-dlp's defaults: forcing
+    the android/ios clients drops most formats (including audio-only ones) now that
+    YouTube serves those clients SABR-only streams.
+
+    Args:
+        output_path: Directory to save files
+        audio_only: Whether to download audio only
+        convert_mp3: Whether to convert to MP3 (only applies with audio_only)
+        resolution: Max video height such as '1080p' (None or 'best' = highest)
+        subtitle_langs: Optional list of subtitle language codes (e.g. ['en', 'ko'])
+        rate_limit_kbps: Download speed limit in KB/s (0 = unlimited)
+        cookies_from_browser: Browser name to extract cookies from (e.g. 'chrome')
+        cookiefile: Netscape cookies file; when omitted a cookies.txt in the
+            project root or cwd is picked up automatically
+        proxy: Proxy URL (e.g. 'socks5://127.0.0.1:1080')
+        filename_template: yt-dlp output template without extension
+        progress_hooks: Optional yt-dlp progress hooks
+
+    Returns:
+        yt-dlp options dictionary
+
+    Raises:
+        RuntimeError: If MP3 conversion is requested but ffmpeg cannot be found
+    """
+    tmpl = filename_template or '%(title)s'
+    opts: Dict[str, Any] = {
+        'outtmpl': os.path.join(output_path, f'{tmpl}.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+    }
+
+    ffmpeg_location = _get_ffmpeg_location_from_env()
+    if ffmpeg_location:
+        opts['ffmpeg_location'] = ffmpeg_location
+
+    if audio_only:
+        opts['format'] = 'bestaudio/best'
+        if convert_mp3:
+            # yt-dlp invokes ffmpeg for FFmpegExtractAudio; fail early with a clear message.
+            if not ffmpeg_location and shutil.which('ffmpeg') is None:
+                raise RuntimeError(
+                    "MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH, "
+                    "or set FFMPEG_LOCATION (or FFMPEG_PATH/FFMPEG_BIN) to the ffmpeg binary or directory."
+                )
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+    elif resolution and resolution != 'best':
+        # e.g. resolution='1080p' -> '1080', '720p' -> '720'
+        res_num = resolution.replace('p', '').replace('k', '000').replace('K', '000')
+        opts['format'] = (
+            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
+            f'/bestvideo[height<={res_num}]+bestaudio'
+            f'/best[height<={res_num}]/best'
+        )
+        opts['merge_output_format'] = 'mp4'
+
+    if subtitle_langs:
+        opts['writesubtitles'] = True
+        opts['writeautomaticsub'] = True
+        opts['subtitleslangs'] = list(subtitle_langs)
+        opts['subtitlesformat'] = 'srt/best'
+
+    if rate_limit_kbps and rate_limit_kbps > 0:
+        opts['ratelimit'] = rate_limit_kbps * 1024  # convert KB/s to B/s
+
+    # Browser cookie extraction (bypasses 403 bot-detection)
+    if cookies_from_browser:
+        opts['cookiesfrombrowser'] = (cookies_from_browser,)
+
+    # Cookie file: an explicit path wins; otherwise auto-detect one in the project root
+    if cookiefile:
+        if os.path.isfile(cookiefile):
+            opts['cookiefile'] = cookiefile
+    else:
+        default_cookiefile = _find_default_cookiefile()
+        if default_cookiefile:
+            opts['cookiefile'] = default_cookiefile
+
+    # JS runtime for YouTube's n-challenge / SABR-protected videos. The solver script
+    # comes from yt-dlp-ejs when installed, otherwise yt-dlp fetches it from GitHub.
+    if shutil.which('node'):
+        opts['js_runtimes'] = {'node': {}}
+        if not YTDLP_EJS_AVAILABLE:
+            opts['remote_components'] = ['ejs:github']
+
+    if proxy:
+        opts['proxy'] = proxy
+
+    if progress_hooks:
+        opts['progress_hooks'] = list(progress_hooks)
+
+    return opts
+
+
+def _run_ytdlp(url: str, ydl_opts: Dict[str, Any], converted_to_mp3: bool) -> Tuple[str, Dict[str, Any]]:
+    """Run a yt-dlp download and return (final file path, info dict)."""
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        fname = _get_downloaded_filename(ydl, info)
+
+    # yt-dlp returns the pre-postprocess filename in many cases; if we requested
+    # MP3 conversion, the final file should be the same base name with .mp3.
+    if converted_to_mp3 and fname:
+        base, _ext = os.path.splitext(fname)
+        fname = base + '.mp3'
+    return fname, info
+
+
+def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
                         convert_mp3: bool = False,
                         progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
                         progress_file: Optional[str] = None,
@@ -326,127 +466,82 @@ def download_with_ytdlp(url: str, output_path: str, audio_only: bool = False,
         convert_mp3: Whether to convert to MP3 (for audio)
         progress_callback: Optional callback(filename, received_bytes, total_bytes, speed, eta)
         progress_file: Optional path to write progress updates
-        subtitle_langs: Optional list of subtitle language codes (e.g. ['en', 'ko'])
-        rate_limit_kbps: Download speed limit in KB/s (0 = unlimited)
-        cookies_from_browser: Browser name to extract cookies from (e.g. 'chrome', 'firefox')
-        
+        Other options are passed through to build_ytdlp_opts().
+
     Returns:
         Path to the downloaded file
-        
+
     Raises:
         RuntimeError: If yt-dlp is not available
     """
     if not YTDLP_AVAILABLE:
         raise RuntimeError('yt-dlp is not available')
 
-    # sensible defaults (mimic options used in downloader_manager._build_ytdlp_opts)
-    _tmpl = filename_template if filename_template else '%(title)s'
-    ydl_opts = {
-        'outtmpl': os.path.join(output_path, f'{_tmpl}.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web'],
-                'player_skip': ['configs'],
-            }
-        },
-        'nocheckcertificate': True,
-        'no_check_certificate': True,
-        'age_limit': None,
-    }
+    ydl_opts = build_ytdlp_opts(
+        output_path,
+        audio_only=audio_only,
+        convert_mp3=convert_mp3,
+        resolution=resolution,
+        subtitle_langs=subtitle_langs,
+        rate_limit_kbps=rate_limit_kbps,
+        cookies_from_browser=cookies_from_browser,
+        cookiefile=cookiefile,
+        proxy=proxy,
+        filename_template=filename_template,
+        progress_hooks=[_create_ytdlp_progress_hook(progress_callback, progress_file)],
+    )
+    fname, _info = _run_ytdlp(url, ydl_opts, audio_only and convert_mp3)
 
-    ffmpeg_location = _get_ffmpeg_location_from_env()
-    if ffmpeg_location:
-        ydl_opts['ffmpeg_location'] = ffmpeg_location
-
-    if audio_only and convert_mp3:
-        # yt-dlp invokes ffmpeg for FFmpegExtractAudio; fail early with a clear message.
-        if not ffmpeg_location and shutil.which('ffmpeg') is None:
-            raise RuntimeError(
-                "MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH, "
-                "or set FFMPEG_LOCATION (or FFMPEG_PATH/FFMPEG_BIN) to the ffmpeg binary or directory."
-            )
-
-    if audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
-        if convert_mp3:
-            # Convert to MP3 using ffmpeg via yt-dlp postprocessor.
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        else:
-            ydl_opts['postprocessors'] = []
-    elif resolution and resolution != 'best':
-        # e.g. resolution='1080p' -> '1080', '720p' -> '720'
-        res_num = resolution.replace('p', '').replace('k', '000').replace('K', '000')
-        ydl_opts['format'] = (
-            f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]'
-            f'/bestvideo[height<={res_num}]+bestaudio'
-            f'/best[height<={res_num}]/best'
-        )
-        ydl_opts['merge_output_format'] = 'mp4'
-    
-    # Subtitles
-    if subtitle_langs:
-        ydl_opts['writesubtitles'] = True
-        ydl_opts['writeautomaticsub'] = True
-        ydl_opts['subtitleslangs'] = list(subtitle_langs)
-        ydl_opts['subtitlesformat'] = 'srt/best'
-
-    # Speed limit
-    if rate_limit_kbps and rate_limit_kbps > 0:
-        ydl_opts['ratelimit'] = rate_limit_kbps * 1024  # convert KB/s to B/s
-
-    # Browser cookie extraction (bypasses 403 bot-detection)
-    if cookies_from_browser:
-        ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
-
-    # Cookie file (cookies.txt from browser export or yt-dlp --cookies)
-    # Auto-detect cookies file in workspace root if not explicitly given
-    if cookiefile and os.path.isfile(cookiefile):
-        ydl_opts['cookiefile'] = cookiefile
-    elif not cookiefile:
-        _search_dirs = [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]
-        for _search_dir in _search_dirs:
-            for _candidate in ('cookies.txt', 'www.youtube.com_cookies.txt'):
-                _path = os.path.join(_search_dir, _candidate)
-                if os.path.isfile(_path):
-                    ydl_opts['cookiefile'] = _path
-                    break
-            if 'cookiefile' in ydl_opts:
-                break
-
-    # JS runtime (node) + EJS remote solver for n-challenge / SABR-protected videos
-    if shutil.which('node'):
-        ydl_opts['js_runtimes'] = {'node': {}}
-        ydl_opts['remote_components'] = ['ejs:github']
-
-    # Proxy (e.g. 'socks5://127.0.0.1:1080' or 'http://user:pass@host:port')
-    if proxy:
-        ydl_opts['proxy'] = proxy
-
-    ydl_opts['progress_hooks'] = [_create_ytdlp_progress_hook(progress_callback, progress_file)]
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        fname = _get_downloaded_filename(ydl, info)
-
-    # yt-dlp returns the pre-postprocess filename in many cases; if we requested
-    # MP3 conversion, the final file should be the same base name with .mp3.
-    if audio_only and convert_mp3 and fname:
-        base, _ext = os.path.splitext(fname)
-        fname = base + '.mp3'
-    
     _write_completion_status(progress_file, fname)
     return fname
+
+
+def download_queue_item(item, progress_cb: Callable[[int], None]) -> str:
+    """DownloadQueue download function shared by the Streamlit app and the API server.
+
+    Args:
+        item: download_queue.QueueItem to download
+        progress_cb: Callback receiving progress as 0-100
+
+    Returns:
+        Path to the downloaded file
+    """
+    if not YTDLP_AVAILABLE:
+        raise RuntimeError('yt-dlp is not available')
+
+    def _hook(d: Dict[str, Any]):
+        if d.get('status') != 'downloading':
+            return
+        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+        if total > 0:
+            progress_cb(int(d.get('downloaded_bytes', 0) / total * 100))
+
+    subtitle_langs = None
+    if item.subtitles:
+        subtitle_langs = [l.strip() for l in item.subtitle_lang.split(',') if l.strip()] or ['en']
+
+    os.makedirs(item.output_folder, exist_ok=True)
+    ydl_opts = build_ytdlp_opts(
+        item.output_folder,
+        audio_only=item.audio_only,
+        convert_mp3=item.convert_mp3,
+        resolution=item.resolution or None,
+        subtitle_langs=subtitle_langs,
+        rate_limit_kbps=item.rate_limit,
+        cookies_from_browser=item.cookies_from_browser or None,
+        cookiefile=item.cookiefile or None,
+        proxy=item.proxy or None,
+        filename_template=item.filename_template or None,
+        progress_hooks=[_hook],
+    )
+    filepath, info = _run_ytdlp(item.url, ydl_opts, item.audio_only and item.convert_mp3)
+
+    if DOWNLOAD_DB_AVAILABLE:
+        record_download(item.url, item.output_folder, filepath,
+                        title=info.get('title', ''),
+                        size=os.path.getsize(filepath) if filepath and os.path.isfile(filepath) else 0,
+                        mode='audio' if (item.audio_only or item.convert_mp3) else 'video')
+    return filepath
 
 
 def _create_ytdlp_progress_hook(progress_callback: Optional[Callable], 
