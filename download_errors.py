@@ -19,6 +19,10 @@ class DownloadErrorCode(str, Enum):
     UNKNOWN = "unknown"
 
 
+class DownloadCancelled(Exception):
+    """Raised from a progress callback to abort a download the user cancelled."""
+
+
 @dataclass(frozen=True)
 class DownloadFailure:
     code: DownloadErrorCode

@@ -1,31 +1,27 @@
-"""FastAPI-based REST API server for YouTube Downloader."""
+"""FastAPI-based REST API server for YouTube Downloader.
+
+Security defaults: binds to 127.0.0.1 unless --host is given, and when the
+API_TOKEN environment variable is set every request must send it as
+``X-API-Key: <token>`` or ``Authorization: Bearer <token>``.
+"""
 import os
-from typing import List
-from fastapi import FastAPI, HTTPException
+import secrets
+from typing import List, Optional
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
 from pytube_helper import (
     YTDLP_AVAILABLE, is_ffmpeg_available, PYDUB_AVAILABLE,
-    get_video_streams, extract_playlist_urls_with_titles, extract_channel_videos,
+    get_video_info, extract_playlist_urls_with_titles, extract_channel_videos,
 )
 from download_db import is_downloaded, get_history, clear_history
 from download_errors import classify_download_error
 from download_queue import DownloadQueue, QueueItem, QueueItemStatus
 from queue_download_adapter import download_queue_item
 
-app = FastAPI(
-    title='YouTube Downloader API',
-    description='REST API for downloading YouTube videos, playlists, and channels.',
-    version='1.1.0',
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
-    allow_methods=['*'], allow_headers=['*'],
-)
-
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DEFAULT_OUTPUT, exist_ok=True)
 
@@ -34,6 +30,51 @@ def _api_error(status_code: int, code: str, message: str, retryable: bool = Fals
     raise HTTPException(status_code=status_code, detail={
         'code': code, 'message': message, 'retryable': retryable,
     })
+
+
+def _require_token(x_api_key: Optional[str] = Header(None),
+                   authorization: Optional[str] = Header(None)):
+    """Enforce API_TOKEN when it is configured; open access otherwise (local use)."""
+    expected = os.environ.get('API_TOKEN', '')
+    if not expected:
+        return
+    supplied = x_api_key or ''
+    if not supplied and authorization and authorization.lower().startswith('bearer '):
+        supplied = authorization[7:].strip()
+    if not secrets.compare_digest(supplied, expected):
+        _api_error(401, 'unauthorized', 'Missing or invalid API token', False)
+
+
+app = FastAPI(
+    title='YouTube Downloader API',
+    description='REST API for downloading YouTube videos, playlists, and channels.',
+    version='1.2.0',
+    dependencies=[Depends(_require_token)],
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
+    allow_methods=['*'], allow_headers=['*'],
+)
+
+
+def _validate_cookiefile(path: str) -> str:
+    """Only accept cookie files inside the project or download folder.
+
+    yt-dlp writes the cookie jar back to this path when it finishes, so an
+    arbitrary path would let a caller overwrite any file the server can write.
+    """
+    if not path:
+        return ''
+    real = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    allowed_roots = [os.path.normcase(os.path.realpath(p)) for p in (PROJECT_DIR, DEFAULT_OUTPUT)]
+    # commonpath() raises for paths on different Windows drives, so compare drives first
+    inside = any(os.path.commonpath([real, root]) == root for root in allowed_roots
+                 if os.path.splitdrive(real)[0] == os.path.splitdrive(root)[0])
+    if not inside or not os.path.isfile(real):
+        _api_error(400, 'invalid_cookiefile',
+                   'cookiefile must be an existing file inside the project or downloads folder', False)
+    return real
 
 
 def _validate_output_folder(folder: str) -> str:
@@ -47,7 +88,9 @@ def _validate_output_folder(folder: str) -> str:
     return os.path.realpath(os.path.abspath(normalized))
 
 
-_queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.queue.json'))
+# Separate from the Streamlit app's .queue.json: both may run against the same
+# downloads folder (docker-compose) and must not overwrite each other's state.
+_queue = DownloadQueue(persist_path=os.path.join(DEFAULT_OUTPUT, '.api_queue.json'))
 _queue.set_download_function(download_queue_item)
 _queue.start_worker()
 
@@ -126,6 +169,10 @@ class QueueItemResponse(BaseModel):
     added_at: float
     started_at: float
     finished_at: float
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    speed: float = 0.0
+    eta: int = 0
 
 
 class StatusResponse(BaseModel):
@@ -148,7 +195,18 @@ def _add_queue_item(req, out: str, scheduled_time: float = 0.0):
         audio_only=req.audio_only, convert_mp3=req.convert_mp3,
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit, scheduled_time=scheduled_time,
-        proxy=req.proxy, cookiefile=req.cookiefile,
+        proxy=req.proxy, cookiefile=_validate_cookiefile(req.cookiefile),
+        resolution=req.resolution, filename_template=req.filename_template,
+    )
+
+
+def _add_queue_batch(req, urls: List[str], folder: str, titles: Optional[List[str]] = None):
+    return _queue.add_batch(
+        urls=urls, output_folder=folder, titles=titles,
+        audio_only=req.audio_only, convert_mp3=req.convert_mp3,
+        subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
+        rate_limit=req.rate_limit, proxy=req.proxy,
+        cookiefile=_validate_cookiefile(req.cookiefile),
         resolution=req.resolution, filename_template=req.filename_template,
     )
 
@@ -184,13 +242,7 @@ def start_download(req: DownloadRequest):
 def batch_download(req: BatchRequest):
     out = _validate_output_folder(req.output_folder)
     os.makedirs(out, exist_ok=True)
-    items = _queue.add_batch(
-        urls=req.urls, output_folder=out, audio_only=req.audio_only,
-        convert_mp3=req.convert_mp3, subtitles=req.subtitles,
-        subtitle_lang=req.subtitle_lang, rate_limit=req.rate_limit,
-        proxy=req.proxy, cookiefile=req.cookiefile,
-        resolution=req.resolution, filename_template=req.filename_template,
-    )
+    items = _add_queue_batch(req, req.urls, out)
     return [_queue_response(it) for it in items]
 
 
@@ -213,13 +265,9 @@ def playlist_download(req: PlaylistRequest):
     safe_title = "".join(c for c in pl_title if c.isalnum() or c in ' ._-()[]').strip() or 'Playlist'
     folder = os.path.join(out, safe_title)
     os.makedirs(folder, exist_ok=True)
-    items = _queue.add_batch(
-        urls=[it['url'] for it in pl_items if it.get('url')], output_folder=folder,
-        audio_only=req.audio_only, convert_mp3=req.convert_mp3,
-        subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
-        rate_limit=req.rate_limit, proxy=req.proxy, cookiefile=req.cookiefile,
-        resolution=req.resolution, filename_template=req.filename_template,
-    )
+    entries = [it for it in pl_items if it.get('url')]
+    items = _add_queue_batch(req, [it['url'] for it in entries], folder,
+                             titles=[it.get('title', '') for it in entries])
     return {'playlist_title': pl_title, 'folder': folder,
             'total_items': len(pl_items), 'queued': len(items)}
 
@@ -234,13 +282,9 @@ def channel_download(req: PlaylistRequest):
     safe_title = "".join(c for c in title if c.isalnum() or c in ' ._-()[]').strip() or 'Channel'
     folder = os.path.join(out, safe_title)
     os.makedirs(folder, exist_ok=True)
-    items = _queue.add_batch(
-        urls=[it['url'] for it in ch_items if it.get('url')], output_folder=folder,
-        audio_only=req.audio_only, convert_mp3=req.convert_mp3,
-        subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
-        rate_limit=req.rate_limit, proxy=req.proxy, cookiefile=req.cookiefile,
-        resolution=req.resolution, filename_template=req.filename_template,
-    )
+    entries = [it for it in ch_items if it.get('url')]
+    items = _add_queue_batch(req, [it['url'] for it in entries], folder,
+                             titles=[it.get('title', '') for it in entries])
     return {'channel_title': title, 'folder': folder,
             'total_items': len(ch_items), 'queued': len(items)}
 
@@ -325,9 +369,8 @@ def clear_download_history(output_folder: str = ''):
 
 @app.get('/api/info')
 def video_info(url: str):
-    streams = _extract_or_api_error(get_video_streams, url)
-    return {'title': streams.get('title', 'Unknown'),
-            'backend': streams.get('backend', 'unknown')}
+    info = _extract_or_api_error(get_video_info, url, raise_errors=True)
+    return {**info, 'title': info.get('title') or 'Unknown', 'backend': 'yt-dlp'}
 
 
 @app.get('/api/playlist/info')
@@ -335,14 +378,15 @@ def playlist_info(url: str):
     return _extract_or_api_error(extract_playlist_urls_with_titles, url)
 
 
-def run_api(host: str = '0.0.0.0', port: int = 8000):
+def run_api(host: str = '127.0.0.1', port: int = 8000):
     uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='YouTube Downloader REST API')
-    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='Use 0.0.0.0 to expose on the network (set API_TOKEN too)')
     parser.add_argument('--port', type=int, default=8000)
     args = parser.parse_args()
     run_api(host=args.host, port=args.port)

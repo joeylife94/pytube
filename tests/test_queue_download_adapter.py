@@ -44,10 +44,12 @@ def test_queue_adapter_maps_item_options_and_records_history(tmp_path, monkeypat
         filename_template="%(upload_date)s_%(title)s",
     )
 
-    result = queue_download_adapter.download_queue_item(item, progress.append)
+    result = queue_download_adapter.download_queue_item(
+        item, lambda pct, **stats: progress.append((pct, stats)))
 
     assert result == str(output)
-    assert progress == [50]
+    assert progress == [(50, {"downloaded": 50, "total": 100, "speed": 1.0, "eta": 1})]
+    assert item.title == "Sample title"
     assert captured["kwargs"]["subtitle_langs"] == ["ko", "en"]
     assert captured["kwargs"]["rate_limit_kbps"] == 256
     assert captured["kwargs"]["proxy"] == "socks5://127.0.0.1:1080"

@@ -1,7 +1,7 @@
 """Queue adapter for the authoritative download core.
 
 DownloadQueue owns scheduling/state. This adapter translates QueueItem fields into
-`download_core` arguments, reports percentage progress back to the queue, and writes
+`download_core` arguments, reports progress back to the queue, and writes
 successful downloads to the history DB.
 """
 
@@ -22,12 +22,17 @@ def _subtitle_langs(item: QueueItem):
     return langs or ['en']
 
 
-def download_queue_item(item: QueueItem, progress_cb: Callable[[int], None]) -> str:
-    """Execute one QueueItem through the canonical download core."""
+def download_queue_item(item: QueueItem, progress_cb: Callable[..., None]) -> str:
+    """Execute one QueueItem through the canonical download core.
 
-    def _progress(_filename: str, downloaded: int, total: int, _speed: float, _eta: float) -> None:
+    progress_cb receives (pct, downloaded=, total=, speed=, eta=). It may raise
+    download_errors.DownloadCancelled, which download_core lets through to abort.
+    """
+
+    def _progress(_filename: str, downloaded: int, total: int, speed: float, eta: float) -> None:
         if total > 0:
-            progress_cb(max(0, min(100, int(downloaded / total * 100))))
+            pct = max(0, min(100, int(downloaded / total * 100)))
+            progress_cb(pct, downloaded=downloaded, total=total, speed=speed, eta=int(eta or 0))
 
     result = download_with_ytdlp_result(
         item.url,
@@ -45,6 +50,9 @@ def download_queue_item(item: QueueItem, progress_cb: Callable[[int], None]) -> 
     )
 
     filepath = result.filepath
+    if result.title:
+        # Batch/URL-only items are queued with the URL as their title
+        item.title = result.title
     record_download(
         item.url,
         item.output_folder,

@@ -13,6 +13,8 @@ import os
 import shutil
 from typing import Any, Callable, Dict, List, Optional
 
+from download_errors import DownloadCancelled
+
 try:
     import yt_dlp
     YTDLP_AVAILABLE = True
@@ -67,6 +69,9 @@ def _create_progress_hook(
         if progress_callback:
             try:
                 progress_callback(filename, downloaded, total, speed, eta)
+            except DownloadCancelled:
+                # The only callback exception allowed to stop the transfer.
+                raise
             except Exception:
                 # UI/observer callback failures must not abort the media transfer.
                 pass
