@@ -12,7 +12,7 @@ A complete, production-ready YouTube downloader system with intelligent engine s
    - Comprehensive error handling
    - Type hints throughout
 
-2. **`test_downloader_manager.py`** (Test Suite)
+2. **`examples/test_downloader_manager.py`** (Test Suite)
    - 6 test scenarios covering all features
    - Validates engine selection logic
    - Batch download testing with intentional failures
@@ -24,13 +24,13 @@ A complete, production-ready YouTube downloader system with intelligent engine s
    - Troubleshooting guide
    - Architecture overview
 
-4. **`integration_examples.py`** (Integration Guide)
+4. **`examples/integration_examples.py`** (Integration Guide)
    - Streamlit app integration example
    - Tkinter GUI integration example
    - CLI integration example
    - Service wrapper class
 
-5. **`quick_start_demo.py`** (Quick Start)
+5. **`examples/quick_start_demo.py`** (Quick Start)
    - Demonstrates all 4 features
    - Interactive demo mode
    - Visual output formatting
@@ -194,13 +194,13 @@ except Exception as e:
 
 ```bash
 # Run test suite
-python test_downloader_manager.py
+python examples/test_downloader_manager.py
 
 # Run quick demo (dry-run mode)
-python quick_start_demo.py
+python examples/quick_start_demo.py
 
 # Run actual downloads (set DEMO_MODE = False first)
-python quick_start_demo.py
+python examples/quick_start_demo.py
 ```
 
 ## 📖 Usage Examples
@@ -281,18 +281,18 @@ pip install pytube  # optional
 
 ### 1. Streamlit App Integration
 ```python
-from integration_examples import IntegratedDownloadService
+from examples.integration_examples import IntegratedDownloadService
 
 service = IntegratedDownloadService(output_dir="downloads")
 results = service.download_videos(urls, progress_callback=update_ui)
 ```
 
 ### 2. Tkinter GUI Integration
-See `integration_examples.py` → `tkinter_app_integration()`
+See `examples/integration_examples.py` → `tkinter_app_integration()`
 
 ### 3. CLI Integration
 ```bash
-python integration_examples.py URL1 URL2 --mode mp3 --output music/
+python examples/integration_examples.py URL1 URL2 --mode mp3 --output music/
 ```
 
 ### 4. Existing pytube_helper.py Integration
@@ -373,7 +373,7 @@ Potential improvements for future iterations:
 **Status**: ✅ Complete and ready for use
 
 **Next Steps**: 
-1. Run `python test_downloader_manager.py` to verify setup
+1. Run `python examples/test_downloader_manager.py` to verify setup
 2. Review `DOWNLOADER_MANAGER_README.md` for detailed docs
-3. Try `python quick_start_demo.py` to see features in action
-4. Integrate into existing app (see `integration_examples.py`)
+3. Try `python examples/quick_start_demo.py` to see features in action
+4. Integrate into existing app (see `examples/integration_examples.py`)

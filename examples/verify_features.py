@@ -3,6 +3,11 @@ DownloaderManager 기능 검증 테스트
 실제 다운로드 없이 모든 기능이 정상 작동하는지 확인
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import (
     DownloaderManager, 
     YoutubeDownloader,

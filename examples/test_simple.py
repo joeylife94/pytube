@@ -2,6 +2,11 @@
 간단한 비디오 다운로드 테스트 (자막 없이)
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import DownloaderManager
 import logging
 

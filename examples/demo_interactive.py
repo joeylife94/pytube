@@ -2,6 +2,11 @@
 간단한 데모: 사용자가 URL을 입력하면 다운로드하는 인터랙티브 스크립트
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import DownloaderManager
 import logging
 

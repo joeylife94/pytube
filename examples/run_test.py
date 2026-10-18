@@ -3,6 +3,11 @@
 간단한 비디오 하나로 시작해서 모든 기능을 순서대로 테스트합니다.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import DownloaderManager
 import logging
 

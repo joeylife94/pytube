@@ -44,10 +44,12 @@ def test_queue_adapter_maps_item_options_and_records_history(tmp_path, monkeypat
         filename_template="%(upload_date)s_%(title)s",
     )
 
-    result = queue_download_adapter.download_queue_item(item, progress.append)
+    result = queue_download_adapter.download_queue_item(
+        item, lambda pct, **stats: progress.append((pct, stats)))
 
     assert result == str(output)
-    assert progress == [50]
+    assert progress == [(50, {"downloaded": 50, "total": 100, "speed": 1.0, "eta": 1})]
+    assert item.title == "Sample title"
     assert captured["kwargs"]["subtitle_langs"] == ["ko", "en"]
     assert captured["kwargs"]["rate_limit_kbps"] == 256
     assert captured["kwargs"]["proxy"] == "socks5://127.0.0.1:1080"
@@ -84,3 +86,30 @@ def test_queue_adapter_records_audio_mode_for_mp3(tmp_path, monkeypatch):
 
     queue_download_adapter.download_queue_item(item, lambda _pct: None)
     assert recorded["mode"] == "audio"
+
+
+def test_queue_adapter_reports_progress_when_total_is_unknown(tmp_path, monkeypatch):
+    """Live streams report no total size; the callback must still run so cancel works."""
+    from download_errors import DownloadCancelled
+
+    def fake_download(url, output_folder, **kwargs):
+        kwargs["progress_callback"]("live.ts", 4096, 0, 512.0, 0)
+        return DownloadResult(filepath="", title="")
+
+    monkeypatch.setattr(queue_download_adapter, "download_with_ytdlp_result", fake_download)
+    monkeypatch.setattr(queue_download_adapter, "record_download", lambda *a, **k: None)
+    item = QueueItem(url="https://example.invalid/live", output_folder=str(tmp_path))
+
+    calls = []
+    queue_download_adapter.download_queue_item(item, lambda pct, **stats: calls.append((pct, stats)))
+    assert calls == [(None, {"downloaded": 4096, "total": 0, "speed": 512.0, "eta": 0})]
+
+    def cancelling_cb(pct, **stats):
+        raise DownloadCancelled("stop")
+
+    try:
+        queue_download_adapter.download_queue_item(item, cancelling_cb)
+    except DownloadCancelled:
+        pass
+    else:
+        raise AssertionError("cancellation must propagate even without a total size")
