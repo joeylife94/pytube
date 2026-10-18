@@ -117,3 +117,5 @@ python -m pytest -q tests
 | `download_db.py` | 다운로드 기록과 중복 검사 |
 | `download_errors.py` | 오류 분류 (재시도 가능 여부 등) |
 | `pytube_helper.py` | 메타데이터·재생목록·채널 추출, 이전 버전 호환 함수 |
+| `examples/` | 데모·예제 스크립트, `downloader_manager` 사용 예시. 저장소 루트에서 `python examples/<이름>.py`로 실행해요 ([목록](examples/README.md)) |
+| `docs/` | 개발 환경 안내(`DEV_SETUP.md`), 이전 설계 문서·작업 기록 ([목록](docs/README.md)) |
