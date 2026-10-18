@@ -3,6 +3,16 @@
 __pycache__/
 *.pyc
 .git/
+.github/
 downloads/
 *.part
 .pytest_cache/
+scripts/screenshots/
+
+# Never bake credentials or per-user state into the image
+cookies.txt
+*_cookies.txt
+.env
+.env.*
+.streamlit/secrets.toml
+.app_settings.json

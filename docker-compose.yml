@@ -8,9 +8,14 @@ services:
       - ./downloads:/app/downloads
     environment:
       - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
-  # REST API server
+  # REST API server (set API_TOKEN in your shell or a .env file to require a token)
   api:
     build: .
     command: ["python", "api_server.py", "--host", "0.0.0.0", "--port", "8000"]
@@ -20,4 +25,10 @@ services:
       - ./downloads:/app/downloads
     environment:
       - PYTHONUNBUFFERED=1
+      - API_TOKEN=${API_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
