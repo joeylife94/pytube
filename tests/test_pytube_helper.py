@@ -68,12 +68,24 @@ def test_safe_filename_strips_whitespace():
     assert result == "Test Video"
 
 
-def test_ffmpeg_check_returns_bool_by_mocking_shutil_which():
+def test_ffmpeg_check_returns_bool_by_mocking_shutil_which(monkeypatch):
     """Ensure the function returns a bool and does not depend on the real PATH in CI."""
+    for key in ('FFMPEG_LOCATION', 'FFMPEG_PATH', 'FFMPEG_BIN'):
+        monkeypatch.delenv(key, raising=False)
     with mock.patch('pytube_helper.shutil.which', return_value=None):
         assert is_ffmpeg_available() is False
     with mock.patch('pytube_helper.shutil.which', return_value='C:\\ffmpeg\\bin\\ffmpeg.exe'):
         assert is_ffmpeg_available() is True
+
+
+def test_ffmpeg_check_honours_ffmpeg_location(tmp_path, monkeypatch):
+    """ffmpeg configured only through FFMPEG_LOCATION still counts as available."""
+    monkeypatch.setenv('FFMPEG_LOCATION', str(tmp_path))
+    with mock.patch('pytube_helper.shutil.which', return_value=None):
+        assert is_ffmpeg_available() is True
+    monkeypatch.setenv('FFMPEG_LOCATION', str(tmp_path / 'missing'))
+    with mock.patch('pytube_helper.shutil.which', return_value=None):
+        assert is_ffmpeg_available() is False
 
 
 def test_normalize_video_url_standard():

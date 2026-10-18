@@ -65,6 +65,19 @@ def is_downloaded(url: str, output_folder: str, mode: str = '') -> Optional[Dict
         return None
 
 
+def downloaded_urls(urls: List[str], output_folder: str, mode: str = '') -> set:
+    """Return the subset of urls already downloaded (file still on disk), in one DB read."""
+    with _lock:
+        db = _load(_db_path(output_folder))
+    found = set()
+    for url in urls:
+        rec = db.get(_url_key(url, mode))
+        fpath = rec.get('filepath', '') if rec else ''
+        if fpath and os.path.isfile(fpath):
+            found.add(url)
+    return found
+
+
 def record_download(url: str, output_folder: str, filepath: str,
                     title: str = '', size: int = 0,
                     mode: str = '',

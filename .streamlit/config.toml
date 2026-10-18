@@ -1,0 +1,15 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+# Only cookies.txt and URL lists are uploaded
+maxUploadSize = 10
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+primaryColor = "#E5484D"
+baseRadius = "medium"
+showWidgetBorder = true
+showSidebarBorder = true

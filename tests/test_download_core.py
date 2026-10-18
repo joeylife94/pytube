@@ -5,6 +5,36 @@ import os
 import download_core
 
 
+def test_build_options_leaves_client_selection_to_ytdlp(tmp_path, monkeypatch):
+    """Forced android/ios clients, a stale UA and disabled TLS checks must not come back."""
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    options = download_core.build_ytdlp_options(str(tmp_path))
+
+    assert "extractor_args" not in options
+    assert "http_headers" not in options
+    assert "nocheckcertificate" not in options
+
+
+def test_js_runtime_uses_local_ejs_when_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(
+        download_core.shutil,
+        "which",
+        lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+
+    monkeypatch.setattr(download_core, "YTDLP_EJS_AVAILABLE", True)
+    options = download_core.build_ytdlp_options(str(tmp_path))
+    assert options["js_runtimes"] == {"node": {}}
+    assert "remote_components" not in options
+
+    monkeypatch.setattr(download_core, "YTDLP_EJS_AVAILABLE", False)
+    options = download_core.build_ytdlp_options(str(tmp_path))
+    assert options["remote_components"] == ["ejs:github"]
+
+
 def test_build_options_captures_runtime_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
     monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
@@ -24,7 +54,7 @@ def test_build_options_captures_runtime_controls(tmp_path, monkeypatch):
     )
 
     assert "height<=1080" in options["format"]
-    assert options["merge_output_format"] == "mp4"
+    assert options["format_sort"] == ["res", "ext:mp4:m4a"]
     assert options["subtitleslangs"] == ["en", "ko"]
     assert options["writesubtitles"] is True
     assert options["ratelimit"] == 512 * 1024
@@ -190,3 +220,85 @@ def test_downloader_manager_ytdlp_runtime_delegates_to_core(tmp_path, monkeypatc
     assert result.engine == "yt-dlp"
     assert captured["kwargs"]["audio_only"] is True
     assert captured["kwargs"]["convert_mp3"] is True
+
+
+def test_download_never_clobbers_existing_files(tmp_path, monkeypatch):
+    """Regression: an audio download named like an earlier video used to delete the video."""
+    video = tmp_path / "Clip.webm"
+    video.write_bytes(b"the earlier video")
+
+    class DummyYDL:
+        def __init__(self, options):
+            self.outtmpl = options["outtmpl"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            # yt-dlp writes into the template's folder (the private staging dir)
+            target = self.outtmpl.replace("%(title)s", "Clip").replace("%(ext)s", "webm")
+            assert os.path.dirname(target) != str(tmp_path), "must not write into output folder"
+            with open(target, "wb") as f:
+                f.write(b"new audio")
+            return {"title": "Clip", "requested_downloads": [{"filepath": target}]}
+
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", DummyYDL)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    result = download_core.download_with_ytdlp_result(
+        "https://example.invalid/video", str(tmp_path), audio_only=True)
+
+    assert video.read_bytes() == b"the earlier video"
+    assert result.filepath == str(tmp_path / "Clip (1).webm")
+    assert (tmp_path / "Clip (1).webm").read_bytes() == b"new audio"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(download_core.STAGING_PREFIX)]
+
+
+def test_failed_download_removes_staging_folder(tmp_path, monkeypatch):
+    class FailingYDL:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            raise RuntimeError("HTTP Error 503")
+
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", FailingYDL)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    try:
+        download_core.download_with_ytdlp_result("https://example.invalid/video", str(tmp_path))
+    except RuntimeError:
+        pass
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_reserve_unique_path_is_race_free(tmp_path):
+    """Concurrent finishers of same-named files must each get their own destination."""
+    import threading
+
+    target = str(tmp_path / "Same.mp4")
+    results, barrier = [], threading.Barrier(8)
+
+    def claim():
+        barrier.wait()
+        results.append(download_core._reserve_unique_path(target))
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(set(results)) == 8
+    assert str(tmp_path / "Same.mp4") in results
+    assert str(tmp_path / "Same (7).mp4") in results
