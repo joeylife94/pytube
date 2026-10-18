@@ -5,6 +5,36 @@ import os
 import download_core
 
 
+def test_build_options_leaves_client_selection_to_ytdlp(tmp_path, monkeypatch):
+    """Forced android/ios clients, a stale UA and disabled TLS checks must not come back."""
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(download_core.shutil, "which", lambda name: None)
+
+    options = download_core.build_ytdlp_options(str(tmp_path))
+
+    assert "extractor_args" not in options
+    assert "http_headers" not in options
+    assert "nocheckcertificate" not in options
+
+
+def test_js_runtime_uses_local_ejs_when_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
+    monkeypatch.setattr(
+        download_core.shutil,
+        "which",
+        lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+
+    monkeypatch.setattr(download_core, "YTDLP_EJS_AVAILABLE", True)
+    options = download_core.build_ytdlp_options(str(tmp_path))
+    assert options["js_runtimes"] == {"node": {}}
+    assert "remote_components" not in options
+
+    monkeypatch.setattr(download_core, "YTDLP_EJS_AVAILABLE", False)
+    options = download_core.build_ytdlp_options(str(tmp_path))
+    assert options["remote_components"] == ["ejs:github"]
+
+
 def test_build_options_captures_runtime_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(download_core, "YTDLP_AVAILABLE", True)
     monkeypatch.setattr(download_core.shutil, "which", lambda name: None)

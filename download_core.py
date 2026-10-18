@@ -20,6 +20,13 @@ except ImportError:  # pragma: no cover - exercised only in minimal installs
     yt_dlp = None
     YTDLP_AVAILABLE = False
 
+try:
+    # Installed by yt-dlp[default]; bundles the YouTube JS challenge solver locally.
+    import yt_dlp_ejs  # noqa: F401
+    YTDLP_EJS_AVAILABLE = True
+except ImportError:
+    YTDLP_EJS_AVAILABLE = False
+
 
 ProgressCallback = Callable[[str, int, int, float, float], None]
 
@@ -122,6 +129,10 @@ def build_ytdlp_options(
 
     This function is intentionally side-effect-light so queue/API adapters and unit
     tests can validate option semantics without making network requests.
+
+    YouTube client selection and User-Agent are left to yt-dlp's defaults: forcing
+    the android/ios clients drops most formats (including audio-only ones) now that
+    YouTube serves those clients SABR-only streams.
     """
     if not YTDLP_AVAILABLE:
         raise RuntimeError("yt-dlp is not available")
@@ -131,24 +142,6 @@ def build_ytdlp_options(
         "outtmpl": os.path.join(output_path, f"{template}.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-us,en;q=0.5",
-        },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web"],
-                "player_skip": ["configs"],
-            }
-        },
-        "nocheckcertificate": True,
-        "no_check_certificate": True,
-        "age_limit": None,
     }
 
     ffmpeg_location = get_ffmpeg_location_from_env()
@@ -208,9 +201,12 @@ def build_ytdlp_options(
     if resolved_cookiefile:
         options["cookiefile"] = resolved_cookiefile
 
+    # JS runtime for YouTube's n-challenge / SABR-protected videos. The solver script
+    # comes from yt-dlp-ejs when installed, otherwise yt-dlp fetches it from GitHub.
     if shutil.which("node"):
         options["js_runtimes"] = {"node": {}}
-        options["remote_components"] = ["ejs:github"]
+        if not YTDLP_EJS_AVAILABLE:
+            options["remote_components"] = ["ejs:github"]
 
     if proxy:
         options["proxy"] = proxy
