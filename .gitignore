@@ -61,8 +61,11 @@ downloads/
 .DS_Store
 Thumbs.db
 
-# Streamlit and user-specific
-.streamlit/
+# Streamlit secrets (config.toml with the theme is committed)
+.streamlit/secrets.toml
+
+# Playwright UI smoke screenshots
+scripts/screenshots/
 
 # pip
 pip-wheel-metadata/

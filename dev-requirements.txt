@@ -1,5 +1,4 @@
-pytest>=7.0
+-r requirements.txt
+pytest>=9
 pytest-cov
-httpx>=0.24
-playwright==1.41.1
-yt-dlp
+playwright>=1.64
