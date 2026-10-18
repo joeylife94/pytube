@@ -150,8 +150,13 @@ class DownloadQueue:
         return item
 
     def add_batch(self, urls: List[str], output_folder: str,
-                  titles: Optional[List[str]] = None, **kwargs) -> List[QueueItem]:
-        """Queue several URLs with shared options; titles (same order) are optional."""
+                  titles: Optional[List[str]] = None,
+                  filename_templates: Optional[List[str]] = None, **kwargs) -> List[QueueItem]:
+        """Queue several URLs with shared options.
+
+        titles and filename_templates (same order as urls) are optional per-item
+        overrides; filename_templates falls back to kwargs['filename_template'].
+        """
         items = []
         with self._lock:
             for i, url in enumerate(urls):
@@ -159,6 +164,8 @@ class DownloadQueue:
                 if not u:
                     continue
                 title = (titles[i] if titles and i < len(titles) else '') or u
+                template = ((filename_templates[i] if filename_templates and i < len(filename_templates) else '')
+                            or kwargs.get('filename_template', '%(title)s'))
                 item = QueueItem(
                     url=u, title=title, output_folder=output_folder,
                     audio_only=kwargs.get('audio_only', False),
@@ -169,7 +176,7 @@ class DownloadQueue:
                     proxy=kwargs.get('proxy', ''), cookiefile=kwargs.get('cookiefile', ''),
                     cookies_from_browser=kwargs.get('cookies_from_browser', ''),
                     resolution=kwargs.get('resolution', ''),
-                    filename_template=kwargs.get('filename_template', '%(title)s'),
+                    filename_template=template,
                 )
                 self._items[item.id] = item
                 self._order.append(item.id)
