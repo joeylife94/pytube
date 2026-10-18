@@ -1,4 +1,4 @@
-"""Thread-safe download queue with background processing."""
+"""Thread-safe download queue with persistent state and explicit retry semantics."""
 import os
 import uuid
 import time
@@ -7,8 +7,9 @@ import threading
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any, Callable
 from enum import Enum
-from pathlib import Path
 import logging
+
+from download_errors import DownloadErrorCode, classify_download_error
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,18 @@ class QueueItem:
     convert_mp3: bool = False
     subtitles: bool = False
     subtitle_lang: str = 'en'
-    rate_limit: int = 0  # KB/s, 0 = unlimited
+    rate_limit: int = 0
     status: str = QueueItemStatus.PENDING
-    progress: int = 0  # 0-100
+    progress: int = 0
     error: str = ''
+    error_code: str = ''
+    retryable: bool = False
+    attempts: int = 0
     filepath: str = ''
     added_at: float = field(default_factory=time.time)
     started_at: float = 0.0
     finished_at: float = 0.0
-    # For scheduling
-    scheduled_time: float = 0.0  # unix timestamp, 0 = immediate
-    # Per-item download options (captured from sidebar at queue time)
+    scheduled_time: float = 0.0
     proxy: str = ''
     cookiefile: str = ''
     cookies_from_browser: str = ''
@@ -54,7 +56,7 @@ class QueueItem:
 
 
 class DownloadQueue:
-    """Persistent, thread-safe download queue with background worker."""
+    """Persistent, thread-safe queue. Scheduling is separate from download execution."""
 
     def __init__(self, persist_path: Optional[str] = None, max_concurrent: int = 2):
         self._items: Dict[str, QueueItem] = {}
@@ -67,12 +69,8 @@ class DownloadQueue:
         self._download_fn: Optional[Callable] = None
         self._load()
 
-    # ─── Persistence ────────────────────────────────────────────────────
-
     def _db_file(self) -> str:
-        if self._persist_path:
-            return self._persist_path
-        return os.path.join(os.getcwd(), 'downloads', '.queue.json')
+        return self._persist_path or os.path.join(os.getcwd(), 'downloads', '.queue.json')
 
     def _load(self):
         try:
@@ -80,10 +78,10 @@ class DownloadQueue:
                 data = json.load(f)
             for rec in data:
                 item = QueueItem(**rec)
-                # Reset stuck downloads back to pending
                 if item.status == QueueItemStatus.DOWNLOADING:
                     item.status = QueueItemStatus.PENDING
                     item.progress = 0
+                    item.started_at = 0.0
                 self._items[item.id] = item
                 self._order.append(item.id)
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
@@ -95,38 +93,25 @@ class DownloadQueue:
         tmp = path + '.tmp'
         try:
             with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump([self._items[k].to_dict() for k in self._order if k in self._items],
-                          f, ensure_ascii=False, indent=2)
+                json.dump([self._items[k].to_dict() for k in self._order if k in self._items], f,
+                          ensure_ascii=False, indent=2)
             os.replace(tmp, path)
         except Exception as e:
             logger.error('Failed to save queue: %s', e)
 
-    # ─── Queue operations ───────────────────────────────────────────────
-
     def add(self, url: str, output_folder: str, title: str = '',
             audio_only: bool = False, convert_mp3: bool = False,
-            subtitles: bool = False, subtitle_lang: str = 'en',
-            rate_limit: int = 0,
-            scheduled_time: float = 0.0,
-            proxy: str = '', cookiefile: str = '',
+            subtitles: bool = False, subtitle_lang: str = 'en', rate_limit: int = 0,
+            scheduled_time: float = 0.0, proxy: str = '', cookiefile: str = '',
             cookies_from_browser: str = '', resolution: str = '',
             filename_template: str = '%(title)s') -> QueueItem:
-        """Add a new item to the queue."""
         item = QueueItem(
-            url=url.strip(),
-            title=title or url.strip(),
-            output_folder=output_folder,
-            audio_only=audio_only,
-            convert_mp3=convert_mp3,
-            subtitles=subtitles,
-            subtitle_lang=subtitle_lang,
-            rate_limit=rate_limit,
+            url=url.strip(), title=title or url.strip(), output_folder=output_folder,
+            audio_only=audio_only, convert_mp3=convert_mp3, subtitles=subtitles,
+            subtitle_lang=subtitle_lang, rate_limit=rate_limit,
             status=QueueItemStatus.SCHEDULED if scheduled_time > 0 else QueueItemStatus.PENDING,
-            scheduled_time=scheduled_time,
-            proxy=proxy,
-            cookiefile=cookiefile,
-            cookies_from_browser=cookies_from_browser,
-            resolution=resolution,
+            scheduled_time=scheduled_time, proxy=proxy, cookiefile=cookiefile,
+            cookies_from_browser=cookies_from_browser, resolution=resolution,
             filename_template=filename_template,
         )
         with self._lock:
@@ -136,7 +121,6 @@ class DownloadQueue:
         return item
 
     def add_batch(self, urls: List[str], output_folder: str, **kwargs) -> List[QueueItem]:
-        """Add multiple URLs to the queue at once."""
         items = []
         with self._lock:
             for url in urls:
@@ -144,16 +128,13 @@ class DownloadQueue:
                 if not u:
                     continue
                 item = QueueItem(
-                    url=u,
-                    title=u,
-                    output_folder=output_folder,
+                    url=u, title=u, output_folder=output_folder,
                     audio_only=kwargs.get('audio_only', False),
                     convert_mp3=kwargs.get('convert_mp3', False),
                     subtitles=kwargs.get('subtitles', False),
                     subtitle_lang=kwargs.get('subtitle_lang', 'en'),
                     rate_limit=kwargs.get('rate_limit', 0),
-                    proxy=kwargs.get('proxy', ''),
-                    cookiefile=kwargs.get('cookiefile', ''),
+                    proxy=kwargs.get('proxy', ''), cookiefile=kwargs.get('cookiefile', ''),
                     cookies_from_browser=kwargs.get('cookies_from_browser', ''),
                     resolution=kwargs.get('resolution', ''),
                     filename_template=kwargs.get('filename_template', '%(title)s'),
@@ -165,36 +146,50 @@ class DownloadQueue:
         return items
 
     def remove(self, item_id: str) -> bool:
-        """Remove an item from the queue."""
         with self._lock:
-            if item_id in self._items:
-                item = self._items[item_id]
-                if item.status == QueueItemStatus.DOWNLOADING:
-                    return False  # Can't remove while downloading
-                del self._items[item_id]
-                self._order = [k for k in self._order if k != item_id]
+            item = self._items.get(item_id)
+            if not item or item.status == QueueItemStatus.DOWNLOADING:
+                return False
+            del self._items[item_id]
+            self._order = [k for k in self._order if k != item_id]
+            self._save()
+            return True
+
+    def cancel(self, item_id: str) -> bool:
+        with self._lock:
+            item = self._items.get(item_id)
+            if item and item.status in (QueueItemStatus.PENDING, QueueItemStatus.SCHEDULED):
+                item.status = QueueItemStatus.CANCELLED
+                item.error = ''
+                item.error_code = ''
+                item.retryable = False
+                item.finished_at = time.time()
                 self._save()
                 return True
         return False
 
-    def cancel(self, item_id: str) -> bool:
-        """Cancel a pending or scheduled item."""
+    def retry(self, item_id: str) -> bool:
+        """Requeue a FAILED item only when its failure contract marks it retryable."""
         with self._lock:
-            if item_id in self._items:
-                item = self._items[item_id]
-                if item.status in (QueueItemStatus.PENDING, QueueItemStatus.SCHEDULED):
-                    item.status = QueueItemStatus.CANCELLED
-                    self._save()
-                    return True
-        return False
+            item = self._items.get(item_id)
+            if not item or item.status != QueueItemStatus.FAILED or not item.retryable:
+                return False
+            item.status = QueueItemStatus.PENDING
+            item.progress = 0
+            item.error = ''
+            item.error_code = ''
+            item.retryable = False
+            item.filepath = ''
+            item.started_at = 0.0
+            item.finished_at = 0.0
+            self._save()
+            return True
 
     def clear_completed(self) -> int:
-        """Remove all completed/failed/cancelled items."""
         with self._lock:
-            to_remove = [
-                k for k, v in self._items.items()
-                if v.status in (QueueItemStatus.COMPLETED, QueueItemStatus.FAILED, QueueItemStatus.CANCELLED)
-            ]
+            to_remove = [k for k, v in self._items.items()
+                         if v.status in (QueueItemStatus.COMPLETED, QueueItemStatus.FAILED,
+                                         QueueItemStatus.CANCELLED)]
             for k in to_remove:
                 del self._items[k]
             self._order = [k for k in self._order if k in self._items]
@@ -202,7 +197,6 @@ class DownloadQueue:
             return len(to_remove)
 
     def get_all(self) -> List[QueueItem]:
-        """Return all items in order."""
         with self._lock:
             return [self._items[k] for k in self._order if k in self._items]
 
@@ -217,21 +211,12 @@ class DownloadQueue:
 
     def active_count(self) -> int:
         with self._lock:
-            return sum(1 for v in self._items.values()
-                       if v.status == QueueItemStatus.DOWNLOADING)
-
-    # ─── Background worker ──────────────────────────────────────────────
+            return sum(1 for v in self._items.values() if v.status == QueueItemStatus.DOWNLOADING)
 
     def set_download_function(self, fn: Callable):
-        """Set the function used to perform downloads.
-        
-        fn signature: fn(item: QueueItem, progress_cb: Callable[[int], None]) -> str
-        Should return the downloaded filepath.
-        """
         self._download_fn = fn
 
     def start_worker(self):
-        """Start the background processing thread."""
         if self._worker_thread and self._worker_thread.is_alive():
             return
         self._stop_event.clear()
@@ -239,56 +224,53 @@ class DownloadQueue:
         self._worker_thread.start()
 
     def stop_worker(self):
-        """Stop the background processing thread."""
         self._stop_event.set()
         if self._worker_thread:
             self._worker_thread.join(timeout=5)
 
+    def _mark_failed(self, item: QueueItem, error: BaseException | str,
+                     code: Optional[DownloadErrorCode] = None, retryable: Optional[bool] = None):
+        failure = classify_download_error(error)
+        with self._lock:
+            item.status = QueueItemStatus.FAILED
+            item.error = failure.message[:300]
+            item.error_code = (code or failure.code).value
+            item.retryable = failure.retryable if retryable is None else retryable
+            item.finished_at = time.time()
+            self._save()
+
     def _worker_loop(self):
-        """Background loop that processes pending items."""
         while not self._stop_event.is_set():
             item = self._pick_next()
             if item is None:
                 self._stop_event.wait(2)
                 continue
-
             if not self._download_fn:
-                logger.error('No download function registered; marking item %s as failed. '
-                             'Call set_download_function() before start_worker().', item.id)
-                with self._lock:
-                    item.status = QueueItemStatus.FAILED
-                    item.error = 'No download function registered'
-                    item.finished_at = time.time()
-                    self._save()
+                logger.error('No download function registered; marking item %s failed', item.id)
+                self._mark_failed(item, 'No download function registered',
+                                  code=DownloadErrorCode.INTERNAL, retryable=False)
                 continue
-
             try:
                 def _progress(pct: int):
                     with self._lock:
-                        item.progress = min(pct, 100)
-
+                        item.progress = max(0, min(int(pct), 100))
                 filepath = self._download_fn(item, _progress)
-
                 with self._lock:
                     item.status = QueueItemStatus.COMPLETED
                     item.progress = 100
                     item.filepath = filepath or ''
+                    item.error = ''
+                    item.error_code = ''
+                    item.retryable = False
                     item.finished_at = time.time()
                     self._save()
-
             except Exception as e:
                 logger.error('Queue download failed for %s: %s', item.url, e)
-                with self._lock:
-                    item.status = QueueItemStatus.FAILED
-                    item.error = str(e)[:200]
-                    item.finished_at = time.time()
-                    self._save()
+                self._mark_failed(item, e)
 
     def _pick_next(self) -> Optional[QueueItem]:
-        """Pick the next item to download, atomically marking it as DOWNLOADING."""
         now = time.time()
         with self._lock:
-            # Inline active count to avoid re-acquiring the non-reentrant lock
             active = sum(1 for v in self._items.values() if v.status == QueueItemStatus.DOWNLOADING)
             if active >= self._max_concurrent:
                 return None
@@ -299,10 +281,14 @@ class DownloadQueue:
                 if item.status == QueueItemStatus.PENDING or (
                     item.status == QueueItemStatus.SCHEDULED and item.scheduled_time <= now
                 ):
-                    # Mark DOWNLOADING atomically inside the lock to prevent two workers
-                    # from picking the same item in concurrent calls.
                     item.status = QueueItemStatus.DOWNLOADING
+                    item.progress = 0
+                    item.error = ''
+                    item.error_code = ''
+                    item.retryable = False
                     item.started_at = time.time()
+                    item.finished_at = 0.0
+                    item.attempts += 1
                     self._save()
                     return item
         return None

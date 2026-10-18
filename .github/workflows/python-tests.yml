@@ -16,7 +16,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r dev-requirements.txt
       - name: Run tests
         run: python -m pytest -q tests
 
@@ -29,29 +32,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dev dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r dev-requirements.txt
-      - name: Install runtime requirements (streamlit etc.)
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Install Playwright and browsers (pip + safe fallback)
-        run: |
-          python -m pip install --upgrade pip
-          # ensure playwright is installed (dev-requirements may already provide it)
-          python -m pip install playwright || true
-          # try to install with system deps; if that fails, fall back to per-browser installs
-          python -m playwright install --with-deps || true
-          python -m playwright install chromium firefox webkit || true
+          python -m pip install -r dev-requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install chromium
       - name: Start Streamlit app in background
         run: |
-          # Start streamlit in background and poll until the app responds on port 8501
-          python -m pip install --upgrade pip
-          # Use a robust background start and healthcheck loop
           nohup python -m streamlit run app.py &> streamlit.log &
-          # wait for localhost:8501 to respond (timeout ~120s)
           for i in {1..120}; do
             if curl -sSf http://localhost:8501/ > /dev/null; then
               echo "Streamlit started"
@@ -60,19 +50,21 @@ jobs:
             echo "Waiting for Streamlit... ($i)"
             sleep 1
           done
-      - name: Wait for app to start
+      - name: Verify app started
         run: |
-          if ! curl -sSf http://localhost:8501/; then
+          if ! curl -sSf http://localhost:8501/ > /dev/null; then
             echo "Streamlit did not start in time" >&2
             cat streamlit.log || true
             exit 1
           fi
-      - name: Run Playwright UI test (headless)
+      - name: Run Playwright UI smoke test
         env:
           PLAYWRIGHT_HEADLESS: '1'
         run: python scripts/playwright_test.py
       - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-screenshots
           path: scripts/screenshots/
+          if-no-files-found: ignore

@@ -6,10 +6,13 @@ Supports batch downloads, MP3 conversion, video+subtitles, and subtitles-only mo
 
 import os
 import logging
+import shutil
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
+
+from download_core import YTDLP_AVAILABLE, download_with_ytdlp_result
 
 # Third-party imports
 try:
@@ -19,14 +22,8 @@ except ImportError:
     PYTUBE_AVAILABLE = False
     logging.warning("pytube not available - will use yt-dlp exclusively")
 
-try:
-    import yt_dlp
-    YTDLP_AVAILABLE = True
-except ImportError:
-    YTDLP_AVAILABLE = False
+if not YTDLP_AVAILABLE:
     logging.warning("yt-dlp not available")
-
-from pytube_helper import build_ytdlp_opts
 
 
 # Configure logging
@@ -158,85 +155,106 @@ class YoutubeDownloader:
             return DownloadResult(url, False, error=str(e), engine="pytube")
 
     def _build_ytdlp_opts(self, mode: DownloadMode) -> Dict[str, Any]:
+        """Legacy option-inspection helper retained for docs/verification.
+
+        Runtime yt-dlp execution no longer consumes this dictionary; downloads are
+        routed through :mod:`download_core`. This method remains only for backwards
+        compatibility with the repository's historical verification scripts.
         """
-        Build yt-dlp options dictionary based on download mode.
+        base_opts = {
+            'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
+            'quiet': False,
+            'no_warnings': False,
+            'extract_flat': False,
+        }
+
+        if self.cookies_from_browser:
+            base_opts['cookiesfrombrowser'] = (self.cookies_from_browser,)
         
-        Args:
-            mode: The download mode
-            
-        Returns:
-            Dictionary of yt-dlp options
-        """
-        # Shared base options (cookies, JS runtime, ffmpeg location, MP3 postprocessor)
-        # come from pytube_helper.build_ytdlp_opts; only mode-specific tweaks live here.
-        if not isinstance(mode, DownloadMode):
+        if mode == DownloadMode.VIDEO:
+            opts = {
+                **base_opts,
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+            }
+        elif mode == DownloadMode.MP3:
+            if shutil.which('ffmpeg') is None:
+                raise RuntimeError("MP3 conversion requires ffmpeg. Install ffmpeg and ensure it's on PATH (or set FFMPEG_LOCATION).")
+            opts = {
+                **base_opts,
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': str(self.output_dir / '%(title)s.%(ext)s'),
+            }
+        elif mode == DownloadMode.VIDEO_SUBS:
+            opts = {
+                **base_opts,
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'ko'],
+                'subtitlesformat': 'srt/vtt/best',
+                'postprocessors': [{
+                    'key': 'FFmpegSubtitlesConvertor',
+                    'format': 'srt',
+                }],
+            }
+        elif mode == DownloadMode.SUBS_ONLY:
+            opts = {
+                **base_opts,
+                'skip_download': True,
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'ko'],
+                'subtitlesformat': 'srt/vtt/best',
+                'postprocessors': [{
+                    'key': 'FFmpegSubtitlesConvertor',
+                    'format': 'srt',
+                }],
+            }
+        else:
             raise ValueError(f"Unknown download mode: {mode}")
-
-        with_subs = mode in (DownloadMode.VIDEO_SUBS, DownloadMode.SUBS_ONLY)
-        opts = build_ytdlp_opts(
-            str(self.output_dir),
-            audio_only=mode == DownloadMode.MP3,
-            convert_mp3=mode == DownloadMode.MP3,
-            subtitle_langs=['en', 'ko'] if with_subs else None,  # Prioritize English and Korean
-            cookies_from_browser=self.cookies_from_browser,
-        )
-        opts['quiet'] = False
-        opts['no_warnings'] = False
-
-        if mode in (DownloadMode.VIDEO, DownloadMode.VIDEO_SUBS):
-            # Download best video+audio or best single file
-            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            opts['merge_output_format'] = 'mp4'
-
-        if mode == DownloadMode.SUBS_ONLY:
-            opts['skip_download'] = True  # Don't download video/audio
-
-        if with_subs:
-            opts['subtitlesformat'] = 'srt/vtt/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegSubtitlesConvertor',
-                'format': 'srt',
-            }]
-
         return opts
 
     def _download_with_ytdlp(self, url: str, mode: DownloadMode) -> DownloadResult:
-        """
-        Download using yt-dlp with mode-specific options.
-        
-        Args:
-            url: YouTube video URL
-            mode: Download mode
-            
-        Returns:
-            DownloadResult object
-        """
+        """Download via the authoritative :mod:`download_core` yt-dlp path."""
         try:
-            logger.info(f"Downloading with yt-dlp (mode={mode.value}): {url}")
-            
-            # Build options for this mode
-            ydl_opts = self._build_ytdlp_opts(mode)
-            
-            # Perform the download
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                # Determine the output file path
-                if mode == DownloadMode.MP3:
-                    # For MP3, the extension is changed by postprocessor
-                    filename = ydl.prepare_filename(info)
-                    output_file = str(Path(filename).with_suffix('.mp3'))
-                elif mode == DownloadMode.SUBS_ONLY:
-                    # For subtitles only, look for .srt files
-                    title = info.get('title', 'subtitle')
-                    # Multiple subtitle files may exist
-                    output_file = str(self.output_dir / f"{title}.*.srt")
-                else:
-                    output_file = ydl.prepare_filename(info)
-                
-                logger.info(f"Downloaded successfully: {output_file}")
-                return DownloadResult(url, True, file_path=output_file, engine="yt-dlp")
-                
+            logger.info(f"Downloading with yt-dlp core (mode={mode.value}): {url}")
+
+            kwargs: Dict[str, Any] = {
+                'cookies_from_browser': self.cookies_from_browser,
+            }
+            if mode == DownloadMode.MP3:
+                kwargs.update(audio_only=True, convert_mp3=True)
+            elif mode == DownloadMode.VIDEO_SUBS:
+                kwargs.update(
+                    subtitle_langs=['en', 'ko'],
+                    convert_subtitles_to_srt=True,
+                )
+            elif mode == DownloadMode.SUBS_ONLY:
+                kwargs.update(
+                    subtitle_langs=['en', 'ko'],
+                    subtitles_only=True,
+                    convert_subtitles_to_srt=True,
+                )
+
+            core_result = download_with_ytdlp_result(
+                url,
+                str(self.output_dir),
+                **kwargs,
+            )
+            logger.info(f"Downloaded successfully: {core_result.filepath}")
+            return DownloadResult(
+                url,
+                True,
+                file_path=core_result.filepath,
+                engine="yt-dlp",
+            )
         except Exception as e:
             logger.error(f"yt-dlp download failed for {url}: {str(e)}")
             return DownloadResult(url, False, error=str(e), engine="yt-dlp")

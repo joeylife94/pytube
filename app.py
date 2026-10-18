@@ -12,10 +12,11 @@ from pytube_helper import (
     PYDUB_AVAILABLE, is_ffmpeg_available, has_yt_dlp, download_fallback,
     download_with_ytdlp, extract_playlist_urls, extract_playlist_urls_with_titles,
     cleanup_part_files, YTDLP_AVAILABLE, extract_channel_videos,
-    get_video_info, download_queue_item,
+    get_video_info,
 )
 from download_db import is_downloaded, record_download, get_history, clear_history
 from download_queue import DownloadQueue, QueueItemStatus
+from queue_download_adapter import download_queue_item
 
 logger = logging.getLogger(__name__)
 
