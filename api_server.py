@@ -2,12 +2,15 @@
 
 Security defaults: binds to 127.0.0.1 unless --host is given, and when the
 API_TOKEN environment variable is set every request must send it as
-``X-API-Key: <token>`` or ``Authorization: Bearer <token>``.
+``X-API-Key: <token>`` or ``Authorization: Bearer <token>``. Without a token
+only requests addressed to localhost are served. Browser requests from other
+sites are refused unless their origin is listed in CORS_ORIGINS.
 """
 import os
 import secrets
 from typing import List, Optional
-from fastapi import Depends, FastAPI, Header, HTTPException
+from urllib.parse import urlsplit
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -16,6 +19,7 @@ from pytube_helper import (
     YTDLP_AVAILABLE, is_ffmpeg_available, PYDUB_AVAILABLE,
     get_video_info, extract_playlist_urls_with_titles, extract_channel_videos,
 )
+from download_core import validate_filename_template
 from download_db import is_downloaded, get_history, clear_history
 from download_errors import classify_download_error
 from download_queue import DownloadQueue, QueueItem, QueueItemStatus
@@ -45,15 +49,51 @@ def _require_token(x_api_key: Optional[str] = Header(None),
         _api_error(401, 'unauthorized', 'Missing or invalid API token', False)
 
 
+LOCAL_HOSTNAMES = ('localhost', '127.0.0.1', '::1')
+
+
+def _cors_origins() -> List[str]:
+    return [o.strip().rstrip('/') for o in os.environ.get('CORS_ORIGINS', '').split(',') if o.strip()]
+
+
+def _hostname(netloc: str) -> str:
+    try:
+        return (urlsplit(f'//{netloc}').hostname or '').lower()
+    except ValueError:
+        return ''
+
+
+def _require_trusted_caller(request: Request):
+    """Keep web pages from driving the API through the user's browser.
+
+    CORS alone is not enough: some cross-site POSTs need no preflight. So a
+    browser Origin must be this server itself or listed in CORS_ORIGINS.
+    Without API_TOKEN the API is local-only, so the Host must also be a
+    loopback name; that defeats DNS rebinding, where a site points its own
+    domain at 127.0.0.1 to look same-origin.
+    """
+    host = request.headers.get('host', '')
+    if not os.environ.get('API_TOKEN') and _hostname(host) not in LOCAL_HOSTNAMES:
+        _api_error(403, 'forbidden_host',
+                   'Without API_TOKEN the API only accepts requests to localhost', False)
+    origin = request.headers.get('origin')
+    if origin is None:
+        return
+    allowed = _cors_origins()
+    same_origin = bool(host) and urlsplit(origin).netloc.lower() == host.lower()
+    if not (same_origin or '*' in allowed or origin.rstrip('/') in allowed):
+        _api_error(403, 'forbidden_origin', f'Origin {origin} is not allowed (see CORS_ORIGINS)', False)
+
+
 app = FastAPI(
     title='YouTube Downloader API',
     description='REST API for downloading YouTube videos, playlists, and channels.',
     version='1.2.0',
-    dependencies=[Depends(_require_token)],
+    dependencies=[Depends(_require_trusted_caller), Depends(_require_token)],
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
+    allow_origins=_cors_origins(),
     allow_methods=['*'], allow_headers=['*'],
 )
 
@@ -86,6 +126,13 @@ def _validate_output_folder(folder: str) -> str:
         _api_error(400, 'invalid_output_folder',
                    'output_folder must not contain path traversal (..)', False)
     return os.path.realpath(os.path.abspath(normalized))
+
+
+def _validate_filename_template(template: str) -> str:
+    try:
+        return validate_filename_template(template)
+    except ValueError as exc:
+        _api_error(400, 'invalid_filename_template', str(exc), False)
 
 
 # Separate from the Streamlit app's .queue.json: both may run against the same
@@ -196,7 +243,7 @@ def _add_queue_item(req, out: str, scheduled_time: float = 0.0):
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit, scheduled_time=scheduled_time,
         proxy=req.proxy, cookiefile=_validate_cookiefile(req.cookiefile),
-        resolution=req.resolution, filename_template=req.filename_template,
+        resolution=req.resolution, filename_template=_validate_filename_template(req.filename_template),
     )
 
 
@@ -207,7 +254,7 @@ def _add_queue_batch(req, urls: List[str], folder: str, titles: Optional[List[st
         subtitles=req.subtitles, subtitle_lang=req.subtitle_lang,
         rate_limit=req.rate_limit, proxy=req.proxy,
         cookiefile=_validate_cookiefile(req.cookiefile),
-        resolution=req.resolution, filename_template=req.filename_template,
+        resolution=req.resolution, filename_template=_validate_filename_template(req.filename_template),
     )
 
 

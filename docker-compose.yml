@@ -1,13 +1,18 @@
+# Ports are published on 127.0.0.1 only, so other devices on the network can't
+# reach the app. The web UI has no login; to share it, remove "127.0.0.1:" and
+# only do so on a trusted network (set API_TOKEN for the API too).
 services:
   # Streamlit web UI
   web:
     build: .
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     volumes:
       - ./downloads:/app/downloads
     environment:
       - PYTHONUNBUFFERED=1
+      # Scheduled downloads and timestamps use this zone (containers default to UTC)
+      - TZ=${TZ:-Asia/Seoul}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
       interval: 30s
@@ -20,11 +25,12 @@ services:
     build: .
     command: ["python", "api_server.py", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./downloads:/app/downloads
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Asia/Seoul}
       - API_TOKEN=${API_TOKEN:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]

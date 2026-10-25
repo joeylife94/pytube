@@ -23,7 +23,7 @@ from app_helpers import (
     parse_urls, resolution_for, resolve_template, reveal_file, running_in_container,
     safe_title, save_settings, video_id, watch_url,
 )
-from download_core import YTDLP_EJS_AVAILABLE, _auto_cookiefile
+from download_core import YTDLP_EJS_AVAILABLE, _auto_cookiefile, validate_filename_template
 from download_db import clear_history, downloaded_urls, get_history, is_downloaded
 from download_queue import MAX_CONCURRENT_LIMIT, DownloadQueue, QueueItem, QueueItemStatus
 from pytube_helper import (
@@ -265,6 +265,10 @@ def render_sidebar() -> str:
                      on_change=on_template_preset_change)
         st.text_input('템플릿', key='cfg_filename_template', label_visibility='collapsed',
                       help='yt-dlp 출력 템플릿이에요. 예: %(title)s, %(uploader)s, %(upload_date)s, %(id)s')
+        try:
+            validate_filename_template(st.session_state.get('cfg_filename_template', ''))
+        except ValueError:
+            st.error('템플릿에는 절대 경로나 `..`를 쓸 수 없어요. 파일은 저장 폴더 안에만 저장돼요.', icon='⚠️')
 
         with st.expander('🍪 로그인 · 네트워크', expanded=False):
             render_cookie_settings()

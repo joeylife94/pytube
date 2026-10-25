@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 import shutil
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
@@ -18,9 +19,11 @@ from download_errors import DownloadCancelled
 
 try:
     import yt_dlp
+    from yt_dlp.postprocessor import PostProcessor as _YtdlpPostProcessor
     YTDLP_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only in minimal installs
     yt_dlp = None
+    _YtdlpPostProcessor = object
     YTDLP_AVAILABLE = False
 
 try:
@@ -43,6 +46,59 @@ class DownloadResult:
 
     filepath: str
     title: str = ""
+
+
+class UnsafeOutputPath(ValueError):
+    """A filename template (or the metadata it expands) points outside the download folder."""
+
+
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def validate_filename_template(template: str) -> str:
+    """Reject templates that are absolute or climb out with "..".
+
+    Lets UI/API adapters refuse a bad template up front. The download itself is
+    guarded by _StayInFolderPP, which also catches metadata such as a video
+    titled ".." that only becomes a path component once the template expands.
+    Subfolders like "%(uploader)s/%(title)s" are allowed.
+    """
+    template = template or ""
+    if (template.startswith(("/", "\\")) or _DRIVE_PREFIX.match(template)
+            or ".." in re.split(r"[\\/]", template)):
+        raise UnsafeOutputPath(
+            f"Filename template must stay inside the download folder: {template!r}"
+        )
+    return template
+
+
+def _is_inside(path: str, folder: str) -> bool:
+    path, folder = os.path.normcase(path), os.path.normcase(folder)
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # different drives on Windows
+        return False
+
+
+class _StayInFolderPP(_YtdlpPostProcessor):
+    """Abort before yt-dlp writes anything if the expanded filename leaves `folder`.
+
+    Runs at yt-dlp's "video" stage, right before process_info() resolves the
+    filename and creates directories, subtitles or the media file.
+    """
+
+    def __init__(self, downloader: Any, folder: str):
+        super().__init__(downloader)
+        self._folder = os.path.realpath(folder)
+
+    def run(self, info: Dict[str, Any]):
+        filename = self._downloader.prepare_filename(info)
+        if not filename:  # yt-dlp skips the item itself
+            return [], info
+        target = os.path.realpath(filename)
+        if not _is_inside(target, self._folder):
+            raise UnsafeOutputPath(f"Output path escapes the download folder: {target}")
+        return [], info
 
 
 def get_ffmpeg_location_from_env() -> Optional[str]:
@@ -293,6 +349,7 @@ def download_with_ytdlp_result(
         )
 
         with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.add_post_processor(_StayInFolderPP(ydl, staging), when="video")
             info = ydl.extract_info(url, download=True)
             filename = "" if subtitles_only else _get_downloaded_filename(ydl, info)
 

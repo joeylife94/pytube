@@ -49,6 +49,18 @@ def test_app_shell_renders(app):
     assert app.text_input(key='url_single') is not None
 
 
+def test_unsafe_filename_template_is_flagged(app):
+    def flagged():
+        return any('템플릿에는' in e.value for e in app.error)
+
+    assert not flagged()
+    app.text_input(key='cfg_filename_template').input('../%(title)s').run()
+    assert not app.exception
+    assert flagged()
+    app.text_input(key='cfg_filename_template').input('%(uploader)s/%(title)s').run()
+    assert not flagged()
+
+
 def test_single_video_preview_and_enqueue(app, tmp_path):
     app.text_input(key='url_single').input(VIDEO + '&list=PLxyz').run()
     assert not app.exception
