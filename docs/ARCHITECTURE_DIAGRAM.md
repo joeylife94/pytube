@@ -333,29 +333,31 @@ pytube/
 │   ├── enum DownloadMode
 │   └── enum DownloadEngine
 │
-├── test_downloader_manager.py      ← Test suite (300 lines)
-│   ├── test_scenario_1_basic_video_download()
-│   ├── test_scenario_2_mp3_conversion()
-│   ├── test_scenario_3_video_with_subtitles()
-│   ├── test_scenario_4_subtitles_only()
-│   ├── test_scenario_5_batch_concurrent()
-│   └── test_scenario_6_engine_selection_logic()
+├── examples/
+│   ├── test_downloader_manager.py  ← Test suite (300 lines)
+│   │   ├── test_scenario_1_basic_video_download()
+│   │   ├── test_scenario_2_mp3_conversion()
+│   │   ├── test_scenario_3_video_with_subtitles()
+│   │   ├── test_scenario_4_subtitles_only()
+│   │   ├── test_scenario_5_batch_concurrent()
+│   │   └── test_scenario_6_engine_selection_logic()
+│   │
+│   ├── integration_examples.py     ← Integration guide (400 lines)
+│   │   ├── class IntegratedDownloadService
+│   │   ├── streamlit_app_integration()
+│   │   ├── tkinter_app_integration()
+│   │   └── cli_integration()
+│   │
+│   └── quick_start_demo.py         ← Quick start demo (250 lines)
+│       ├── demo_feature_1_batch_video()
+│       ├── demo_feature_2_mp3()
+│       ├── demo_feature_3_video_subs()
+│       └── demo_feature_4_subs_only()
 │
-├── integration_examples.py         ← Integration guide (400 lines)
-│   ├── class IntegratedDownloadService
-│   ├── streamlit_app_integration()
-│   ├── tkinter_app_integration()
-│   └── cli_integration()
-│
-├── quick_start_demo.py             ← Quick start demo (250 lines)
-│   ├── demo_feature_1_batch_video()
-│   ├── demo_feature_2_mp3()
-│   ├── demo_feature_3_video_subs()
-│   └── demo_feature_4_subs_only()
-│
-├── DOWNLOADER_MANAGER_README.md    ← Documentation (500 lines)
-├── IMPLEMENTATION_SUMMARY.md       ← This summary (500 lines)
-└── ARCHITECTURE_DIAGRAM.md         ← This file
+└── docs/
+    ├── DOWNLOADER_MANAGER_README.md  ← Documentation (500 lines)
+    ├── IMPLEMENTATION_SUMMARY.md     ← This summary (500 lines)
+    └── ARCHITECTURE_DIAGRAM.md       ← This file
 ```
 
 ## Summary

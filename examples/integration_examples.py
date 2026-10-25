@@ -3,6 +3,11 @@ Integration Example: Using DownloaderManager with existing pytube project
 Shows how to integrate the new DownloaderManager into app.py or other modules.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import DownloaderManager, DownloadResult
 from typing import List
 import logging
@@ -13,7 +18,7 @@ logger = logging.getLogger(__name__)
 class IntegratedDownloadService:
     """
     Service class that wraps DownloaderManager for use in the main application.
-    Can be integrated into app.py, app_tkinter.py, or used standalone.
+    Can be integrated into app.py, examples/app_tkinter.py, or used standalone.
     """
     
     def __init__(self, output_dir: str = "downloads"):
@@ -201,7 +206,7 @@ def streamlit_app_integration():
 def tkinter_app_integration():
     """
     Example of how to integrate DownloaderManager into a Tkinter app.
-    Add this to app_tkinter.py.
+    Add this to examples/app_tkinter.py.
     """
     import tkinter as tk
     from tkinter import ttk, scrolledtext, filedialog
@@ -400,7 +405,7 @@ if __name__ == "__main__":
     
     # Example 2: CLI mode
     print("\n2. CLI Integration:")
-    print("  Run: python integration_examples.py https://youtu.be/... --mode mp3")
+    print("  Run: python examples/integration_examples.py https://youtu.be/... --mode mp3")
     
     # Example 3: GUI modes
     print("\n3. GUI Integration:")

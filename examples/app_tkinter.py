@@ -1,6 +1,11 @@
+import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from pytube_helper import get_video_streams, download_video, download_audio
 
 

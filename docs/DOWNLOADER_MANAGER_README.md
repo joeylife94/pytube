@@ -280,7 +280,7 @@ with yt_dlp.YoutubeDL(opts) as ydl:
 Run the test suite to verify functionality:
 
 ```bash
-python test_downloader_manager.py
+python examples/test_downloader_manager.py
 ```
 
 **Test scenarios**:
@@ -330,4 +330,4 @@ To add new download modes:
 1. Add enum to `DownloadMode`
 2. Implement option builder in `_build_ytdlp_opts()`
 3. Update `_select_engine()` if forcing yt-dlp is needed
-4. Add test scenario in `test_downloader_manager.py`
+4. Add test scenario in `examples/test_downloader_manager.py`

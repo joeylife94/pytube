@@ -3,6 +3,11 @@ Quick Start Demo - All 4 Features of DownloaderManager
 Run this script to see all capabilities in action.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, for the app modules
+
 from downloader_manager import DownloaderManager
 import logging
 
@@ -222,7 +227,7 @@ def main():
         print("  To run actual downloads:")
         print("  1. Set DEMO_MODE = False in this script")
         print("  2. Ensure ffmpeg is installed (for MP3 conversion)")
-        print("  3. Run: python quick_start_demo.py")
+        print("  3. Run: python examples/quick_start_demo.py")
         print("=" * 80)
         
     else:
@@ -259,9 +264,9 @@ def main():
     print("\n" + "=" * 80)
     print("  For more details, see:")
     print("  - downloader_manager.py (implementation)")
-    print("  - DOWNLOADER_MANAGER_README.md (documentation)")
-    print("  - test_downloader_manager.py (test suite)")
-    print("  - integration_examples.py (Streamlit/Tkinter/CLI examples)")
+    print("  - docs/DOWNLOADER_MANAGER_README.md (documentation)")
+    print("  - examples/test_downloader_manager.py (test suite)")
+    print("  - examples/integration_examples.py (Streamlit/Tkinter/CLI examples)")
     print("=" * 80 + "\n")
 
 

@@ -2,8 +2,6 @@ import os
 import tempfile
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pytube import YouTube, Playlist
-from pytube.cli import on_progress
 from typing import Callable, Optional, List, Dict, Tuple, Any
 import time
 import math
@@ -13,7 +11,18 @@ import logging
 from download_core import (
     download_with_ytdlp as _core_download_with_ytdlp,
     _create_progress_hook as _create_ytdlp_progress_hook,
+    _auto_cookiefile,
+    get_ffmpeg_location_from_env,
 )
+
+# pytube is an optional legacy backend: it no longer works for most videos, so
+# yt-dlp is preferred everywhere and pytube is only tried when yt-dlp is missing.
+try:
+    from pytube import YouTube, Playlist
+    from pytube.cli import on_progress
+    PYTUBE_AVAILABLE = True
+except ImportError:
+    PYTUBE_AVAILABLE = False
 
 # Constants
 DEFAULT_MAX_RETRIES = 2
@@ -41,8 +50,11 @@ except ImportError:
 
 
 def is_ffmpeg_available() -> bool:
-    """Check whether ffmpeg is on PATH (used by pydub)."""
-    return shutil.which('ffmpeg') is not None
+    """Check whether ffmpeg is usable: on PATH or configured via FFMPEG_LOCATION etc."""
+    if shutil.which('ffmpeg') is not None:
+        return True
+    location = get_ffmpeg_location_from_env()
+    return bool(location) and os.path.exists(location)
 
 
 # module logger
@@ -85,14 +97,26 @@ def _normalize_video_url(url: str) -> str:
     return url
 
 
-def get_video_info(url: str) -> Dict[str, Any]:
+def _fmt_duration(sec) -> str:
+    if not sec:
+        return '?'
+    sec = int(sec)
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+
+
+def get_video_info(url: str, cookiefile: Optional[str] = None, proxy: Optional[str] = None,
+                   cookies_from_browser: Optional[str] = None,
+                   raise_errors: bool = False) -> Dict[str, Any]:
     """Fetch lightweight metadata for a video without downloading it.
 
-    Returns a dict with: title, thumbnail, duration, duration_str,
-    channel, upload_date, filesize_approx.
-    Falls back gracefully if yt-dlp is unavailable.
+    Returns a dict with: id, title, thumbnail, duration, duration_str, channel,
+    upload_date, view_count, is_live, filesize_approx and heights (available
+    video heights, highest first). Returns {} on failure unless raise_errors=True.
     """
     if not YTDLP_AVAILABLE:
+        if raise_errors:
+            raise RuntimeError('yt-dlp is not available')
         return {}
     try:
         ydl_opts = {
@@ -100,27 +124,38 @@ def get_video_info(url: str) -> Dict[str, Any]:
             'no_warnings': True,
             'skip_download': True,
             'extract_flat': False,
+            'noplaylist': True,
         }
+        resolved_cookiefile = _auto_cookiefile(cookiefile)
+        if resolved_cookiefile:
+            ydl_opts['cookiefile'] = resolved_cookiefile
+        if cookies_from_browser:
+            ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
+        if proxy:
+            ydl_opts['proxy'] = proxy
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        def _fmt_duration(sec):
-            if not sec:
-                return '?'
-            sec = int(sec)
-            h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
-            return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
-
+        formats = info.get('formats') or []
+        heights = sorted({f['height'] for f in formats
+                          if f.get('height') and f.get('vcodec') not in (None, 'none')},
+                         reverse=True)
         return {
+            'id': info.get('id', ''),
             'title': info.get('title', ''),
             'thumbnail': info.get('thumbnail', ''),
             'duration': info.get('duration'),
             'duration_str': _fmt_duration(info.get('duration')),
             'channel': info.get('uploader') or info.get('channel', ''),
             'upload_date': info.get('upload_date', ''),
+            'view_count': info.get('view_count'),
+            'is_live': bool(info.get('is_live')),
             'filesize_approx': info.get('filesize_approx') or info.get('filesize'),
+            'heights': heights,
         }
     except Exception:
+        if raise_errors:
+            raise
         return {}
 
 
@@ -170,8 +205,9 @@ def get_video_streams(url: str) -> Dict[str, Any]:
     Raises:
         RuntimeError: If metadata cannot be fetched by either pytube or yt-dlp
     """
-    # Try pytube first. If it fails (e.g. HTTP 400 from innertube), and yt-dlp is
-    # available, fall back to yt-dlp metadata extraction so the UI can continue.
+    # yt-dlp is the maintained backend; pytube is only a last resort without it.
+    if YTDLP_AVAILABLE or not PYTUBE_AVAILABLE:
+        return _get_video_streams_with_ytdlp(url, RuntimeError('pytube not used'))
     try:
         norm_url = _normalize_video_url(url)
         if norm_url != url:
@@ -333,8 +369,8 @@ def download_fallback(url: str, output_path: str, audio_only: bool = False,
                       convert_mp3: bool = False,
                       progress_callback: Optional[Callable[[str, int, int, float, float], None]] = None,
                       progress_file: Optional[str] = None) -> str:
-    """Try pytube first, fallback to yt-dlp on error.
-    
+    """Download with yt-dlp, or with the legacy pytube backend when yt-dlp is missing.
+
     Args:
         url: YouTube video URL
         output_path: Directory to save the file
@@ -342,14 +378,18 @@ def download_fallback(url: str, output_path: str, audio_only: bool = False,
         convert_mp3: Whether to convert to MP3
         progress_callback: Optional callback(filename, received, total, speed, eta)
         progress_file: Optional progress file path
-        
+
     Returns:
         Path to the downloaded file
-        
+
     Raises:
-        Exception: If both pytube and yt-dlp fail
+        Exception: If no backend can download the URL
     """
-    # Try pytube approach (single video)
+    if YTDLP_AVAILABLE:
+        return download_with_ytdlp(url, output_path, audio_only=audio_only, convert_mp3=convert_mp3,
+                                   progress_callback=progress_callback, progress_file=progress_file)
+    if not PYTUBE_AVAILABLE:
+        raise RuntimeError('Neither yt-dlp nor pytube is installed')
     try:
         yt = YouTube(url)
         # pick best progressive
@@ -380,11 +420,8 @@ def download_fallback(url: str, output_path: str, audio_only: bool = False,
 
         out = download_video(stream, output_path, progress_callback=_local_progress)
         return out
-    except Exception:
-        # fallback to yt-dlp if available
-        if YTDLP_AVAILABLE:
-            return download_with_ytdlp(url, output_path, audio_only=audio_only, convert_mp3=convert_mp3, progress_callback=progress_callback, progress_file=progress_file)
-        raise
+    except Exception as e:
+        raise RuntimeError(f'pytube download failed for {url}: {e}') from e
 
 
 def download_playlist(playlist_url: str, output_path: str,
@@ -564,25 +601,20 @@ def _extract_playlist_urls(playlist_url: str) -> List[str]:
     Raises:
         RuntimeError: If playlist cannot be parsed or no videos found
     """
-    try:
-        pl = Playlist(playlist_url)
-        # force evaluation of the playlist generator so extraction errors
-        # from pytube are raised here and can be caught for fallback.
-        video_urls = list(pl.video_urls)
-    except Exception as e:
-        if not YTDLP_AVAILABLE:
-            raise RuntimeError(
-                f'Could not parse playlist URL: {e}. '
-                'Install yt-dlp to enable fallback extraction.'
-            ) from e
-
+    if YTDLP_AVAILABLE:
         try:
             video_urls = _extract_playlist_urls_with_ytdlp(playlist_url)
-        except Exception as ytdlp_error:
-            raise RuntimeError(
-                f'Could not parse playlist URL or extract entries: {e} / {ytdlp_error}'
-            ) from ytdlp_error
-    
+        except Exception as e:
+            raise RuntimeError(f'Could not parse playlist URL or extract entries: {e}') from e
+    elif PYTUBE_AVAILABLE:
+        try:
+            # force evaluation of the playlist generator so extraction errors surface here
+            video_urls = list(Playlist(playlist_url).video_urls)
+        except Exception as e:
+            raise RuntimeError(f'Could not parse playlist URL: {e}') from e
+    else:
+        raise RuntimeError('Playlist extraction requires yt-dlp')
+
     if not video_urls:
         raise RuntimeError('No videos found in playlist')
     
@@ -629,24 +661,47 @@ def extract_playlist_urls_with_titles(playlist_url: str) -> Dict[str, Any]:
     return {'playlist_title': playlist_title, 'items': [{'url': u, 'title': u} for u in urls]}
 
 
-def cleanup_part_files(output_path: str) -> int:
-    """Remove leftover .part files in the output directory to avoid WinError 32.
+STALE_STAGING_SECONDS = 6 * 3600
 
-    Returns the number of files removed.
+
+def _newest_mtime(folder: str) -> float:
+    newest = os.path.getmtime(folder)
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                pass
+    return newest
+
+
+def cleanup_part_files(output_path: str) -> int:
+    """Remove leftover .part files and abandoned download staging folders.
+
+    Staging folders (download_core.STAGING_PREFIX) are only removed once nothing
+    in them has changed for STALE_STAGING_SECONDS, so running downloads survive.
+    Returns the number of files/folders removed.
     """
+    from download_core import STAGING_PREFIX
+
     removed = 0
     try:
         for f in os.listdir(output_path):
-            if f.endswith('.part'):
-                fpath = os.path.join(output_path, f)
-                try:
+            fpath = os.path.join(output_path, f)
+            try:
+                if f.endswith('.part') and os.path.isfile(fpath):
                     os.remove(fpath)
                     removed += 1
                     logger.info('Removed leftover .part file: %s', fpath)
-                except OSError as e:
-                    logger.warning('Could not remove .part file %s: %s', fpath, e)
+                elif (f.startswith(STAGING_PREFIX) and os.path.isdir(fpath)
+                      and time.time() - _newest_mtime(fpath) > STALE_STAGING_SECONDS):
+                    shutil.rmtree(fpath)
+                    removed += 1
+                    logger.info('Removed abandoned staging folder: %s', fpath)
+            except OSError as e:
+                logger.warning('Could not remove %s: %s', fpath, e)
     except Exception as e:
-        logger.warning('Error scanning for .part files: %s', e)
+        logger.warning('Error scanning for leftover files: %s', e)
     return removed
 
 
