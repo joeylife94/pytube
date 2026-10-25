@@ -77,6 +77,7 @@ tmp/
 # secrets
 .env
 .env.*
+!.env.example
 
 # YouTube cookies (contain auth credentials, never commit)
 cookies.txt
