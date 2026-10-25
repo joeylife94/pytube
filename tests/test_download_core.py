@@ -1,6 +1,10 @@
 """Unit tests for the authoritative yt-dlp download core."""
 
+import http.server
 import os
+import threading
+
+import pytest
 
 import download_core
 
@@ -95,6 +99,9 @@ def test_download_core_returns_postprocessed_mp3_path(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        def add_post_processor(self, pp, when="post_process"):
+            pass
+
         def extract_info(self, url, download=True):
             return {
                 "title": "sample",
@@ -138,6 +145,9 @@ def test_subtitles_only_is_a_core_mode(tmp_path, monkeypatch):
 
         def __exit__(self, exc_type, exc, tb):
             return False
+
+        def add_post_processor(self, pp, when="post_process"):
+            pass
 
         def extract_info(self, url, download=True):
             return {"title": "captions"}
@@ -237,6 +247,9 @@ def test_download_never_clobbers_existing_files(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        def add_post_processor(self, pp, when="post_process"):
+            pass
+
         def extract_info(self, url, download=True):
             # yt-dlp writes into the template's folder (the private staging dir)
             target = self.outtmpl.replace("%(title)s", "Clip").replace("%(ext)s", "webm")
@@ -268,6 +281,9 @@ def test_failed_download_removes_staging_folder(tmp_path, monkeypatch):
 
         def __exit__(self, exc_type, exc, tb):
             return False
+
+        def add_post_processor(self, pp, when="post_process"):
+            pass
 
         def extract_info(self, url, download=True):
             raise RuntimeError("HTTP Error 503")
@@ -302,3 +318,81 @@ def test_reserve_unique_path_is_race_free(tmp_path):
     assert len(set(results)) == 8
     assert str(tmp_path / "Same.mp4") in results
     assert str(tmp_path / "Same (7).mp4") in results
+
+
+@pytest.mark.parametrize("template", ["%(title)s", "%(upload_date)s_%(title)s", "%(uploader)s/%(title)s", ""])
+def test_validate_filename_template_accepts_relative_templates(template):
+    assert download_core.validate_filename_template(template) == template
+
+
+@pytest.mark.parametrize("template", [
+    "../%(title)s", "a/../../%(title)s", "a\\..\\%(title)s", "/tmp/%(title)s", "\\%(title)s",
+    "C:%(title)s", "c:\\x\\%(title)s",
+])
+def test_validate_filename_template_rejects_escapes(template):
+    with pytest.raises(download_core.UnsafeOutputPath):
+        download_core.validate_filename_template(template)
+
+
+@pytest.fixture
+def media_url():
+    """A tiny local "video" so the real yt-dlp pipeline can run without the internet."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"\0" * 2048
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}/media.mp4"
+    server.shutdown()
+
+
+def _use_fake_extractor(monkeypatch, title):
+    """Real YoutubeDL (format selection, filenames, download), with metadata reporting `title`."""
+
+    class FakeExtractorYDL(download_core.yt_dlp.YoutubeDL):
+        def extract_info(self, url, download=True, **kwargs):
+            return self.process_ie_result({
+                "id": "vid", "title": title, "url": url, "ext": "mp4",
+                "extractor": "test", "extractor_key": "Test", "webpage_url": url,
+            }, download=download)
+
+    monkeypatch.setattr(download_core.yt_dlp, "YoutubeDL", FakeExtractorYDL)
+
+
+def test_real_download_keeps_subfolder_templates(tmp_path, monkeypatch, media_url):
+    _use_fake_extractor(monkeypatch, "Clip")
+    out = tmp_path / "out"
+
+    result = download_core.download_with_ytdlp_result(
+        media_url, str(out), filename_template="%(title)s/%(id)s")
+
+    assert result.filepath == str(out / "Clip" / "vid.mp4")
+    assert os.path.getsize(result.filepath) == 2048
+
+
+@pytest.mark.parametrize("title, template", [
+    ("..", "%(title)s/%(id)s"),          # harmless-looking template, hostile metadata
+    ("Clip", "../../%(title)s"),
+    ("Clip", "ABSOLUTE"),
+])
+def test_download_never_writes_outside_output_folder(tmp_path, monkeypatch, media_url, title, template):
+    if template == "ABSOLUTE":
+        template = str(tmp_path / "elsewhere" / "%(title)s")
+    _use_fake_extractor(monkeypatch, title)
+    out = tmp_path / "out"
+
+    with pytest.raises(download_core.UnsafeOutputPath):
+        download_core.download_with_ytdlp_result(media_url, str(out), filename_template=template)
+
+    # Refused before yt-dlp created any file or folder, and staging was cleaned up
+    assert [p.relative_to(tmp_path) for p in tmp_path.rglob("*")] == [out.relative_to(tmp_path)]

@@ -24,6 +24,9 @@ def test_download_with_ytdlp_sets_mp3_postprocessor_when_requested(tmp_path, mon
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        def add_post_processor(self, pp, when='post_process'):
+            pass
+
         def extract_info(self, url, download=True):
             # simulate yt-dlp returning a pre-postprocess file
             out = str(tmp_path / 'sample.webm')

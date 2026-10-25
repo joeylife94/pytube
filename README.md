@@ -63,7 +63,10 @@ python api_server.py --port 8000
 ```
 
 - 기본은 이 PC에서만 접속돼요(`127.0.0.1`). 다른 기기에서 쓰려면 `--host 0.0.0.0`과 함께 환경변수 `API_TOKEN`을 설정하세요. 그러면 요청마다 `X-API-Key: <토큰>`(또는 `Authorization: Bearer <토큰>`) 헤더가 필요해요.
+- 토큰이 없으면 `localhost`·`127.0.0.1` 주소로 온 요청만 받아요.
+- 다른 웹사이트가 브라우저를 통해 API를 호출하는 요청은 거부해요. 웹 페이지에서 API를 써야 하면 그 출처를 `CORS_ORIGINS`에 넣으세요.
 - `cookiefile`에는 프로젝트 폴더나 `downloads` 폴더 안의 파일만 지정할 수 있어요.
+- `filename_template`에는 절대 경로나 `..`를 쓸 수 없어요. 파일은 항상 저장 폴더 안에 저장돼요.
 - 엔드포인트 목록과 예시는 http://localhost:8000/docs 와 앱의 「🔌 API」 탭에 있어요.
 
 ```bash
@@ -80,7 +83,9 @@ docker compose up -d --build
 
 - 웹 UI: http://localhost:8501 · API: http://localhost:8000
 - 받은 파일은 `./downloads`에 저장돼요. 이미지에 ffmpeg와 Node.js가 들어 있어요.
-- API 토큰을 쓰려면 `API_TOKEN=... docker compose up -d`처럼 실행하세요.
+- 이 PC에서만 접속돼요. 다른 기기에서도 쓰려면 `docker-compose.yml`의 `ports`에서 `127.0.0.1:`을 지우세요. 웹 UI에는 로그인이 없으니 믿을 수 있는 네트워크에서만 여세요.
+- 그런 경우 API에는 토큰을 설정하세요: `API_TOKEN=... docker compose up -d`.
+- 예약 시각은 `Asia/Seoul` 기준이에요. 다른 시간대는 `TZ=Europe/Berlin docker compose up -d`처럼 바꿔요.
 
 ## 환경변수
 
@@ -89,7 +94,8 @@ docker compose up -d --build
 | `PYTUBE_DOWNLOAD_DIR` | 기본 저장 폴더 (기본값: `./downloads`). 대기열·설정 파일도 여기에 저장돼요 |
 | `FFMPEG_LOCATION` | ffmpeg 실행 파일 또는 폴더 경로 |
 | `API_TOKEN` | 설정하면 API 요청에 토큰이 필요해요 |
-| `CORS_ORIGINS` | API의 CORS 허용 출처 (쉼표 구분, 기본값 `*`) |
+| `CORS_ORIGINS` | API를 호출할 수 있는 웹 페이지 출처 (쉼표 구분, 기본값: 없음) |
+| `TZ` | Docker에서 쓸 시간대 (기본값: `Asia/Seoul`) |
 
 ## 개발
 

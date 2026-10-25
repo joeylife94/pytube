@@ -7,9 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # ffmpeg: MP3 conversion and video+audio merging
 # nodejs: JS runtime yt-dlp needs to solve YouTube's n-challenge (SABR-protected videos)
+# tzdata: zone files so TZ (set in docker-compose.yml) takes effect instead of UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     nodejs \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
