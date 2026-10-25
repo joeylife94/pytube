@@ -1,9 +1,12 @@
 FROM python:3.13-slim
 
+# XDG_CACHE_HOME: yt-dlp's cache must stay writable when compose runs the
+# container as a non-root PUID (whose HOME is "/")
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    XDG_CACHE_HOME=/tmp/cache
 
 # ffmpeg: MP3 conversion and video+audio merging
 # nodejs: JS runtime yt-dlp needs to solve YouTube's n-challenge (SABR-protected videos)

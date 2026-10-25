@@ -83,9 +83,17 @@ docker compose up -d --build
 
 - 웹 UI: http://localhost:8501 · API: http://localhost:8000
 - 받은 파일은 `./downloads`에 저장돼요. 이미지에 ffmpeg와 Node.js가 들어 있어요.
-- 이 PC에서만 접속돼요. 다른 기기에서도 쓰려면 `docker-compose.yml`의 `ports`에서 `127.0.0.1:`을 지우세요. 웹 UI에는 로그인이 없으니 믿을 수 있는 네트워크에서만 여세요.
-- 그런 경우 API에는 토큰을 설정하세요: `API_TOKEN=... docker compose up -d`.
-- 예약 시각은 `Asia/Seoul` 기준이에요. 다른 시간대는 `TZ=Europe/Berlin docker compose up -d`처럼 바꿔요.
+- 이 PC에서만 접속돼요. 웹 UI에는 로그인이 없어서, 다른 기기에서 쓰려면 포트를 열지 말고 Tailscale 같은 VPN을 쓰세요.
+- 홈서버(리눅스 미니PC 등)에 올려서 밖에서 쓰는 방법은 [docs/SERVER.md](docs/SERVER.md)에 있어요.
+- 기기별 설정은 `.env`에 넣어요 (`cp .env.example .env`).
+
+| `.env` 항목 | 설명 |
+|---|---|
+| `PUID` · `PGID` | 컨테이너를 실행할 사용자 (기본값: root). 리눅스에서는 `id -u`·`id -g` 값으로 넣어야 받은 파일이 내 소유가 돼요 |
+| `DOWNLOAD_DIR` | 받은 파일을 저장할 폴더 (기본값: `./downloads`) |
+| `TZ` | 예약 시각 기준 시간대 (기본값: `Asia/Seoul`) |
+| `BIND_ADDR` | 포트를 열 주소 (기본값: `127.0.0.1`) |
+| `API_TOKEN` | 설정하면 API 요청에 토큰이 필요해요 |
 
 ## 환경변수
 
@@ -95,7 +103,6 @@ docker compose up -d --build
 | `FFMPEG_LOCATION` | ffmpeg 실행 파일 또는 폴더 경로 |
 | `API_TOKEN` | 설정하면 API 요청에 토큰이 필요해요 |
 | `CORS_ORIGINS` | API를 호출할 수 있는 웹 페이지 출처 (쉼표 구분, 기본값: 없음) |
-| `TZ` | Docker에서 쓸 시간대 (기본값: `Asia/Seoul`) |
 
 ## 개발
 

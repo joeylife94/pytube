@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 2026-10-25 — 홈서버 배포
+
+- 홈서버(Ubuntu · Docker · Tailscale)에 올리는 방법을 [docs/SERVER.md](docs/SERVER.md)에 정리했어요.
+- Docker 설정을 `.env`로 바꿀 수 있어요 (`PUID`·`PGID`, `DOWNLOAD_DIR`, `BIND_ADDR`, `TZ`, `API_TOKEN`). `.env.example`을 참고하세요. 설정이 레포 파일 밖에 있어서 업데이트할 때 충돌이 나지 않아요.
+- `PUID`·`PGID`로 컨테이너를 내 계정으로 실행하면 받은 파일이 root 소유가 되지 않아요.
+- `scripts/update_server.sh`: 코드를 받고 최신 yt-dlp로 이미지를 다시 빌드해요. cron으로 매주 돌릴 수 있어요.
+
 ## 2026-10-25 — 보안 · Docker 수정
 
 - 다른 웹사이트가 브라우저를 통해 로컬 API를 호출하지 못하게 했어요. `CORS_ORIGINS` 기본값이 `*`에서 "없음"으로 바뀌었고, 허용되지 않은 출처의 요청은 거부해요. 토큰이 없으면 `localhost` 주소로 온 요청만 받아요 (DNS 리바인딩 방지).
